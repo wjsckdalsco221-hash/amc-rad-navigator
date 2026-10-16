@@ -4,35 +4,62 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 # ---------------------------------------------------------
-# 1. 모바일 앱 전용 레이아웃 및 상단 잘림 완벽 방지 CSS
+# 1. 기본 레이아웃 설정 (와이드 모드 활성화)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="서울아산병원 검사실 길 안내",
     page_icon="🏥",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-st.markdown("""
+# 세션 상태 초기화 (페이지: 'home' 또는 'map')
+if "page" not in st.session_state:
+    st.session_state.page = "home"
+if "selected_exam_idx" not in st.session_state:
+    st.session_state.selected_exam_idx = 0
+if "sel_bldg" not in st.session_state:
+    st.session_state.sel_bldg = "동관"
+if "sel_floor" not in st.session_state:
+    st.session_state.sel_floor = "2층"
+if "start_key" not in st.session_state:
+    st.session_state.start_key = "2F_EAST_XRAY"
+if "day_type" not in st.session_state:
+    st.session_state.day_type = "평일(월~금)"
+if "time_str" not in st.session_state:
+    st.session_state.time_str = "14:20"
+
+# ---------------------------------------------------------
+# 2. 동적 반응형 CSS (홈 화면: 480px 모바일 뷰 / 지도 화면: 1200px 와이드 뷰)
+# ---------------------------------------------------------
+if st.session_state.page == "home":
+    container_max_width = "480px"
+    padding_top = "2.8rem"
+else:
+    container_max_width = "1200px"  # 지도 화면에서는 가로로 쫙 넓게 펼쳐짐!
+    padding_top = "2.0rem"
+
+st.markdown(f"""
 <style>
-/* Streamlit 상단 기본 헤더 투명화 및 높이 축소 */
-header[data-testid="stHeader"] {
+/* Streamlit 상단 기본 헤더 투명화 */
+header[data-testid="stHeader"] {{
     background: transparent !important;
     height: 1.5rem !important;
-}
+}}
 
-/* 모바일 화면 비율(최대 480px) 중앙 정렬 및 상단 여백 확보 (잘림 방지) */
-.block-container {
-    max-width: 480px !important;
-    padding-top: 2.8rem !important;
+/* 페이지 상태에 따라 가로 폭 동적 조절 */
+.block-container {{
+    max-width: {container_max_width} !important;
+    padding-top: {padding_top} !important;
     padding-bottom: 3rem !important;
     padding-left: 1rem !important;
     padding-right: 1rem !important;
     margin: 0 auto !important;
-}
+    transition: max-width 0.3s ease;
+}}
 
 /* 상단 서울아산병원 길안내 헤더 박스 */
-.app-header {
+.app-header {{
     background: linear-gradient(135deg, #005C5C 0%, #003A3A 100%);
     color: white;
     padding: 18px 20px;
@@ -42,29 +69,29 @@ header[data-testid="stHeader"] {
     box-shadow: 0 4px 10px rgba(0,0,0,0.12);
     box-sizing: border-box;
     width: 100%;
-}
-.app-header h3 {
+}}
+.app-header h3 {{
     margin: 0;
     font-size: 1.22rem;
     font-weight: 800;
     color: #FFFFFF;
     line-height: 1.4;
-}
-.app-header p {
+}}
+.app-header p {{
     margin: 6px 0 0 0;
     font-size: 0.85rem;
     color: #D2EBEB;
     line-height: 1.35;
-}
+}}
 
-/* 2번째 이미지 스타일: 검사 항목 레이아웃 */
-.exam-row-wrap {
+/* 검사 일정 카드 스타일 */
+.exam-row-wrap {{
     display: flex;
     align-items: flex-start;
     gap: 12px;
     margin-bottom: 8px;
-}
-.exam-pill {
+}}
+.exam-pill {{
     background-color: #F0F5FF;
     color: #1D4ED8;
     font-weight: 700;
@@ -73,67 +100,67 @@ header[data-testid="stHeader"] {
     border-radius: 20px;
     white-space: nowrap;
     margin-top: 2px;
-}
-.exam-info-col {
+}}
+.exam-info-col {{
     flex: 1;
-}
-.exam-title-txt {
+}}
+.exam-title-txt {{
     font-size: 1.05rem;
     font-weight: 800;
     color: #111111;
     margin-bottom: 4px;
     line-height: 1.35;
-}
-.exam-sub-txt {
+}}
+.exam-sub-txt {{
     font-size: 0.87rem;
     color: #6B7280;
     line-height: 1.45;
-}
+}}
 
-/* 2번째 이미지 스타일: 짙은 녹색 사각 '길안내' 버튼 */
-div.stButton > button {
+/* 녹색 '길안내' 사각 버튼 스타일 */
+div.stButton > button {{
     background-color: #2E6930 !important;
     color: #FFFFFF !important;
     border: none !important;
     border-radius: 4px !important;
     font-weight: 700 !important;
     font-size: 0.98rem !important;
-    padding: 0.45rem 1.2rem !important;
+    padding: 0.5rem 1.2rem !important;
     width: 100% !important;
     box-shadow: 0 2px 4px rgba(0,0,0,0.08) !important;
-}
-div.stButton > button:hover {
+}}
+div.stButton > button:hover {{
     background-color: #235225 !important;
     color: #FFFFFF !important;
-}
+}}
 
-/* 현재 선택된 길안내 목적지 배너 */
-.dest-banner {
+/* 목적지 안내 배너 */
+.dest-banner {{
     background-color: #EBF7EE;
     border: 2px solid #28A745;
     border-radius: 12px;
-    padding: 12px 14px;
-    margin: 12px 0;
+    padding: 14px 18px;
+    margin: 12px 0 16px 0;
     color: #155724;
-}
+}}
 
 /* 1단계 / 2단계 지도 타이틀 뱃지 */
-.map-step-badge {
+.map-step-badge {{
     background-color: #005C5C;
     color: white;
-    padding: 6px 12px;
+    padding: 6px 14px;
     border-radius: 8px;
-    font-size: 0.86rem;
+    font-size: 0.92rem;
     font-weight: 700;
-    margin-top: 12px;
-    margin-bottom: 6px;
+    margin-top: 14px;
+    margin-bottom: 8px;
     display: inline-block;
-}
+}}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. 관(서관/동관/신관) · 층(1층/2층) · 세부 위치 좌표 데이터
+# 3. 관(서관/동관/신관) · 층(1층/2층) · 세부 위치 좌표 데이터
 # ---------------------------------------------------------
 MAP_ROOMS = {
     # ================= [서관 1층] =================
@@ -239,7 +266,6 @@ ELEVATORS = {
     "신관": {"name": "신관 엘리베이터", "2F_box": (0.860, 0.618, 0.885, 0.672), "1F_box": (0.825, 0.573, 0.886, 0.622)}
 }
 
-# 나의 검사 일정 목록 (2번째 이미지 형식)
 PATIENT_EXAMS = [
     {
         "title": "[검사] 가정의학과 검체검사",
@@ -268,7 +294,7 @@ PATIENT_EXAMS = [
 ]
 
 # ---------------------------------------------------------
-# 3. 시간·상황 매칭 규칙 엔진
+# 4. 시간·상황 매칭 규칙 엔진
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
@@ -290,7 +316,7 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 4. 이미지 탐색 및 실시간 도면 컬러 매핑 함수
+# 5. 이미지 탐색 및 실시간 컬러 매핑 함수
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -409,164 +435,163 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     return pil_img
 
-# ---------------------------------------------------------
-# 5. 세션 상태 초기화
-# ---------------------------------------------------------
-if "selected_exam_idx" not in st.session_state:
-    st.session_state.selected_exam_idx = 0
-if "sel_bldg" not in st.session_state:
-    st.session_state.sel_bldg = "동관"
-if "sel_floor" not in st.session_state:
-    st.session_state.sel_floor = "2층"
-if "start_key" not in st.session_state:
-    st.session_state.start_key = "2F_EAST_XRAY"
-if "day_type" not in st.session_state:
-    st.session_state.day_type = "평일(월~금)"
-if "time_str" not in st.session_state:
-    st.session_state.time_str = "14:20"
+# =========================================================
+# PAGE 1: 나의 검사 일정 & 내 위치 선택 화면 (모바일 뷰)
+# =========================================================
+if st.session_state.page == "home":
+    st.markdown("""
+    <div class="app-header">
+        <h3>🏥 서울아산병원 검사실 길 안내</h3>
+        <p>받으실 검사의 [길안내] 버튼을 누르면 넓은 지도로 이동합니다.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# 6. 화면 렌더링
-# ---------------------------------------------------------
-# [요구사항 2] 상단 배너 잘림 없이 출력 & 불필요한 '위치 안내' 버튼 제거
-st.markdown("""
-<div class="app-header">
-    <h3>🏥 서울아산병원 검사실 길 안내</h3>
-    <p>내 위치(빨간색) ➔ 다음 검사실(녹색) 실시간 지도 안내</p>
-</div>
-""", unsafe_allow_html=True)
+    st.markdown("#### 📅 나의 검사 일정")
+    st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 눌러주세요.")
 
-# [요구사항 1] 나의 검사 일정: 2번째 이미지 구조 ('검사' 배지 + 검사명/시간 + 녹색 '길안내' 버튼)
-st.markdown("#### 📅 나의 검사 일정")
-
-for idx, ex in enumerate(PATIENT_EXAMS):
-    is_active = (st.session_state.selected_exam_idx == idx)
-    with st.container():
-        st.markdown(f"""
-        <div style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:10px; padding:12px; margin-bottom:6px;">
-            <div class="exam-row-wrap">
-                <div class="exam-pill">검사</div>
-                <div class="exam-info-col">
-                    <div class="exam-title-txt">{ex['title']}</div>
-                    <div class="exam-sub-txt">{ex['sub']}</div>
+    # 검사 일정 카드 및 개별 '길안내' 버튼 (2번째 이미지 스타일)
+    for idx, ex in enumerate(PATIENT_EXAMS):
+        with st.container():
+            st.markdown(f"""
+            <div style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:10px; padding:12px; margin-bottom:6px;">
+                <div class="exam-row-wrap">
+                    <div class="exam-pill">검사</div>
+                    <div class="exam-info-col">
+                        <div class="exam-title-txt">{ex['title']}</div>
+                        <div class="exam-sub-txt">{ex['sub']}</div>
+                    </div>
                 </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
-        btn_txt = "✓ 길안내 안내 중" if is_active else "길안내"
-        if st.button(btn_txt, key=f"guide_btn_{idx}", use_container_width=True):
-            st.session_state.selected_exam_idx = idx
+            # 길안내 버튼 클릭 시 선택된 검사를 세션에 저장하고 즉시 'map' 페이지로 이동!
+            if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
+                st.session_state.selected_exam_idx = idx
+                st.session_state.page = "map"
+                st.rerun()
+
+    st.markdown("---")
+
+    # 3칸 분할 현재 내 위치 선택란 (1. 관 선택 / 2. 층 선택 / 3. 위치 선택)
+    st.markdown("#### 📍 현재 내 위치 선택")
+    loc_col1, loc_col2, loc_col3 = st.columns([1.0, 0.9, 1.5])
+
+    with loc_col1:
+        bldg_list = ["서관", "동관", "신관"]
+        if st.session_state.sel_bldg not in bldg_list:
+            st.session_state.sel_bldg = "동관"
+        st.session_state.sel_bldg = st.selectbox(
+            "관 선택",
+            options=bldg_list,
+            index=bldg_list.index(st.session_state.sel_bldg)
+        )
+
+    with loc_col2:
+        floor_list = ["1층", "2층"]
+        if st.session_state.sel_floor not in floor_list:
+            st.session_state.sel_floor = "2층"
+        st.session_state.sel_floor = st.selectbox(
+            "층 선택",
+            options=floor_list,
+            index=floor_list.index(st.session_state.sel_floor)
+        )
+
+    # 선택된 [관] + [층]의 검사실만 자동 필터링
+    filtered_keys = [
+        k for k, v in MAP_ROOMS.items()
+        if v["building"] == st.session_state.sel_bldg and v["floor"] == st.session_state.sel_floor
+    ]
+
+    with loc_col3:
+        default_idx = 0
+        if st.session_state.start_key in filtered_keys:
+            default_idx = filtered_keys.index(st.session_state.start_key)
+        st.session_state.start_key = st.selectbox(
+            "위치 선택",
+            options=filtered_keys,
+            format_func=lambda k: MAP_ROOMS[k]["short_name"],
+            index=default_idx
+        )
+
+    # 시간 테스트 옵션 (접이식)
+    with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)"):
+        t_c1, t_c2 = st.columns(2)
+        st.session_state.day_type = t_c1.selectbox("요일", ["평일(월~금)", "토요일", "일요일/공휴일"], index=0)
+        st.session_state.time_str = t_c2.select_slider("시각", ["09:00", "14:20", "17:45", "19:10"], value=st.session_state.time_str)
+
+
+# =========================================================
+# PAGE 2: 지도 전용 화면 (가로로 시원하게 펼쳐지는 와이드 뷰)
+# =========================================================
+elif st.session_state.page == "map":
+    # 1. 최상단 뒤로가기 버튼
+    b_col1, b_col2 = st.columns([1.2, 2.8])
+    with b_col1:
+        if st.button("⬅️ 검사 목록 및 위치 변경으로 돌아가기", use_container_width=True):
+            st.session_state.page = "home"
             st.rerun()
 
-st.markdown("---")
+    target_exam = PATIENT_EXAMS[st.session_state.selected_exam_idx]
+    start_key = st.session_state.start_key
+    dest_key = resolve_dest_key(target_exam, start_key, st.session_state.day_type, st.session_state.time_str)
 
-# [요구사항 3] 현재 내 위치 선택: 3칸 구분 (1. 관 선택 / 2. 층 선택 / 3. 위치 선택)
-st.markdown("#### 📍 현재 내 위치 선택")
-loc_col1, loc_col2, loc_col3 = st.columns([1.0, 0.9, 1.5])
+    s_meta = MAP_ROOMS[start_key]
+    d_meta = MAP_ROOMS[dest_key]
+    is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
+    elev_info = ELEVATORS[s_meta["building"]]
 
-with loc_col1:
-    bldg_list = ["서관", "동관", "신관"]
-    if st.session_state.sel_bldg not in bldg_list:
-        st.session_state.sel_bldg = "동관"
-    st.session_state.sel_bldg = st.selectbox(
-        "관 선택",
-        options=bldg_list,
-        index=bldg_list.index(st.session_state.sel_bldg)
-    )
+    # 2. 목적지 요약 배너 (가로 와이드)
+    st.markdown(f"""
+    <div class="dest-banner">
+        <div style="font-size:0.86rem; font-weight:700;">🟢 실시간 맞춤 길안내 목적지</div>
+        <div style="font-size:1.3rem; font-weight:800; margin:3px 0;">{d_meta['name']} ({d_meta['building']} {d_meta['floor']})</div>
+        <div style="font-size:0.9rem; color:#333; margin-top:4px;">
+            • <b>내 출발 위치</b>: [{s_meta['building']} {s_meta['floor']}] {s_meta['name']}<br>
+            • <b>운영시간</b>: {d_meta['hours']}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-with loc_col2:
-    floor_list = ["1층", "2층"]
-    if st.session_state.sel_floor not in floor_list:
-        st.session_state.sel_floor = "2층"
-    st.session_state.sel_floor = st.selectbox(
-        "층 선택",
-        options=floor_list,
-        index=floor_list.index(st.session_state.sel_floor)
-    )
+    # 범례
+    leg_c1, leg_c2, leg_c3 = st.columns(3)
+    leg_c1.markdown("🔴 **연한 빨간색**: 내 출발 위치")
+    leg_c2.markdown("🟢 **연한 녹색**: 가야 할 목적지")
+    leg_c3.markdown("🟠 **주황색 사각 박스**: 탑승/하차 엘리베이터")
 
-# 선택한 [관] + [층]에 해당하는 세부 위치 목록 자동 필터링
-filtered_keys = [
-    k for k, v in MAP_ROOMS.items()
-    if v["building"] == st.session_state.sel_bldg and v["floor"] == st.session_state.sel_floor
-]
+    # 3. 실제 도면 이미지 로드 및 렌더링 (가로 폭 100% 꽉 차게 렌더링)
+    path_2f = find_image("2F")
+    path_1f = find_image("1F")
 
-with loc_col3:
-    default_idx = 0
-    if st.session_state.start_key in filtered_keys:
-        default_idx = filtered_keys.index(st.session_state.start_key)
-    st.session_state.start_key = st.selectbox(
-        "위치 선택",
-        options=filtered_keys,
-        format_func=lambda k: MAP_ROOMS[k]["short_name"],
-        index=default_idx
-    )
-
-# 간이 시간 설정 (필요 시 조절 가능)
-with st.expander("⚙️ 현재 요일 및 시간 변경 (테스트용)"):
-    t_c1, t_c2 = st.columns(2)
-    st.session_state.day_type = t_c1.selectbox("요일", ["평일(월~금)", "토요일", "일요일/공휴일"], index=0)
-    st.session_state.time_str = t_c2.select_slider("시각", ["09:00", "14:20", "17:45", "19:10"], value=st.session_state.time_str)
-
-st.markdown("---")
-
-# ---------------------------------------------------------
-# 7. 맞춤형 도면 안내 출력
-# ---------------------------------------------------------
-target_exam = PATIENT_EXAMS[st.session_state.selected_exam_idx]
-start_key = st.session_state.start_key
-dest_key = resolve_dest_key(target_exam, start_key, st.session_state.day_type, st.session_state.time_str)
-
-s_meta = MAP_ROOMS[start_key]
-d_meta = MAP_ROOMS[dest_key]
-is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
-elev_info = ELEVATORS[s_meta["building"]]
-
-# 상단 직관적 목적지 안내 배너
-st.markdown(f"""
-<div class="dest-banner">
-    <div style="font-size:0.8rem; font-weight:700;">🟢 지금 가실 곳 (도착 목표)</div>
-    <div style="font-size:1.15rem; font-weight:800; margin:2px 0;">{d_meta['name']} ({d_meta['building']} {d_meta['floor']})</div>
-    <div style="font-size:0.82rem; color:#444;">• 운영시간: {d_meta['hours']}</div>
-</div>
-""", unsafe_allow_html=True)
-
-leg_c1, leg_c2 = st.columns(2)
-leg_c1.markdown("<span style='color:#D93025; font-weight:700;'>■ 연한 빨간색</span>: 내 위치", unsafe_allow_html=True)
-leg_c2.markdown("<span style='color:#1E8E3E; font-weight:700;'>■ 연한 녹색</span>: 목적지", unsafe_allow_html=True)
-
-path_2f = find_image("2F")
-path_1f = find_image("1F")
-
-if not path_2f or not path_1f:
-    st.warning("⚠️ `서동신_1층_지도.png` 및 `서동신_2층_지도.png` 파일이 지정된 폴더에 있는지 확인해 주세요.")
-else:
-    arr_2f = clean_base_map(path_2f, "2F")
-    arr_1f = clean_base_map(path_1f, "1F")
-
-    if is_diff_floor:
-        # [1단계 지도] 출발 층 -> 엘리베이터
-        st.markdown(f"<div class='map-step-badge'>1단계 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
-        base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
-        elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
-        img_s1 = draw_colored_map(base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV")
-        st.image(img_s1, use_container_width=True)
-
-        # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실
-        st.markdown(f"<div class='map-step-badge'>2단계 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}] 도착</div>", unsafe_allow_html=True)
-        base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
-        elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
-        img_s2 = draw_colored_map(base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV")
-        st.image(img_s2, use_container_width=True)
+    if not path_2f or not path_1f:
+        st.warning("⚠️ `서동신_1층_지도.png` 및 `서동신_2층_지도.png` 파일이 지정된 폴더에 있는지 확인해 주세요.")
     else:
-        # 동일 층 지도 1장
-        st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 안내</div>", unsafe_allow_html=True)
-        base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
-        img_same = draw_colored_map(base_same, red_key=start_key, green_key=dest_key, mode="SAME")
-        st.image(img_same, use_container_width=True)
+        arr_2f = clean_base_map(path_2f, "2F")
+        arr_1f = clean_base_map(path_1f, "1F")
 
-# 하단 간단 AI 챗봇
-with st.expander("💬 길 안내 AI 질문하기"):
-    q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 채혈실 어떻게 가나요?")
-    if q:
-        st.success(f"현재 계신 [{s_meta['building']} {s_meta['floor']} {s_meta['short_name']}]에서 [{d_meta['name']}](으)로 이동하시면 됩니다. 지도에 표시된 경로를 따라 이동해 주세요!")
+        if is_diff_floor:
+            # [1단계 지도] 출발 층 -> 엘리베이터
+            st.markdown(f"<div class='map-step-badge'>1단계 지도 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
+            base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
+            elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
+            img_s1 = draw_colored_map(base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV")
+            st.image(img_s1, use_container_width=True)
+
+            # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실
+            st.markdown(f"<div class='map-step-badge'>2단계 지도 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착</div>", unsafe_allow_html=True)
+            base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
+            elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
+            img_s2 = draw_colored_map(base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV")
+            st.image(img_s2, use_container_width=True)
+        else:
+            # 동일 층 지도 1장
+            st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)</div>", unsafe_allow_html=True)
+            base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
+            img_same = draw_colored_map(base_same, red_key=start_key, green_key=dest_key, mode="SAME")
+            st.image(img_same, use_container_width=True)
+
+    # 하단 질문 챗봇
+    st.markdown("---")
+    with st.expander("💬 길 안내 AI에게 질문하기"):
+        q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 채혈실 어떻게 가나요?")
+        if q:
+            st.success(f"현재 위치({s_meta['name']})에서 {d_meta['name']}(으)로 이동하시면 됩니다. 지도에 표시된 동선을 따라가 주세요!")
