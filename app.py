@@ -1,10 +1,7 @@
 import os
-import io
-import base64
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
-import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
 # 1. 기본 레이아웃 설정 (와이드 모드 활성화)
@@ -16,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화
+# 세션 상태 초기화 (페이지: 'home' 또는 'map')
 if "page" not in st.session_state:
     st.session_state.page = "home"
 if "selected_exam_idx" not in st.session_state:
@@ -33,24 +30,24 @@ if "time_str" not in st.session_state:
     st.session_state.time_str = "14:20"
 
 # ---------------------------------------------------------
-# 2. 반응형 CSS (홈 화면: 480px 모바일 뷰 / 지도 화면: 1200px 와이드 뷰)
+# 2. 동적 반응형 CSS (홈 화면: 480px 모바일 뷰 / 지도 화면: 1200px 와이드 뷰)
 # ---------------------------------------------------------
 if st.session_state.page == "home":
     container_max_width = "480px"
-    padding_top = "2.6rem"
+    padding_top = "2.8rem"
 else:
-    container_max_width = "1200px"  # 지도 화면 가로 확장
+    container_max_width = "1200px"  # 지도 화면에서는 가로로 쫙 넓게 펼쳐짐!
     padding_top = "2.0rem"
 
 st.markdown(f"""
 <style>
-/* 상단 기본 헤더 투명화 */
+/* Streamlit 상단 기본 헤더 투명화 */
 header[data-testid="stHeader"] {{
     background: transparent !important;
     height: 1.5rem !important;
 }}
 
-/* 페이지 상태별 가로 폭 동적 조절 */
+/* 페이지 상태에 따라 가로 폭 동적 조절 */
 .block-container {{
     max-width: {container_max_width} !important;
     padding-top: {padding_top} !important;
@@ -61,7 +58,7 @@ header[data-testid="stHeader"] {{
     transition: max-width 0.3s ease;
 }}
 
-/* 상단 서울아산병원 길안내 헤더 */
+/* 상단 서울아산병원 길안내 헤더 박스 */
 .app-header {{
     background: linear-gradient(135deg, #005C5C 0%, #003A3A 100%);
     color: white;
@@ -87,7 +84,7 @@ header[data-testid="stHeader"] {{
     line-height: 1.35;
 }}
 
-/* 검사 일정 카드 */
+/* 검사 일정 카드 스타일 */
 .exam-row-wrap {{
     display: flex;
     align-items: flex-start;
@@ -120,7 +117,7 @@ header[data-testid="stHeader"] {{
     line-height: 1.45;
 }}
 
-/* 녹색 사각 '길안내' 버튼 */
+/* 녹색 '길안내' 사각 버튼 스타일 */
 div.stButton > button {{
     background-color: #2E6930 !important;
     color: #FFFFFF !important;
@@ -143,17 +140,30 @@ div.stButton > button:hover {{
     border: 2px solid #28A745;
     border-radius: 12px;
     padding: 14px 18px;
-    margin: 10px 0 16px 0;
+    margin: 12px 0 16px 0;
     color: #155724;
+}}
+
+/* 1단계 / 2단계 지도 타이틀 뱃지 */
+.map-step-badge {{
+    background-color: #005C5C;
+    color: white;
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    font-weight: 700;
+    margin-top: 14px;
+    margin-bottom: 8px;
+    display: inline-block;
 }}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 3. 관 · 층 · 검사실 좌표 데이터
+# 3. 관(서관/동관/신관) · 층(1층/2층) · 세부 위치 좌표 데이터
 # ---------------------------------------------------------
 MAP_ROOMS = {
-    # 서관 1층
+    # ================= [서관 1층] =================
     "1F_WEST_BLOOD": {
         "name": "서관 1층 채혈실", "short_name": "서관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "서관",
@@ -166,7 +176,8 @@ MAP_ROOMS = {
         "hours": "상시 운영 (외래·응급 예약)",
         "boxes": [(0.068, 0.514, 0.106, 0.654)]
     },
-    # 서관 2층
+
+    # ================= [서관 2층] =================
     "2F_WEST_CT": {
         "name": "서관 2층 CT실", "short_name": "CT실 / 투시조영실",
         "floor": "2층", "floor_code": "2F", "building": "서관",
@@ -191,14 +202,16 @@ MAP_ROOMS = {
         "hours": "평일 08:00~17:30",
         "boxes": [(0.240, 0.718, 0.313, 0.873), (0.222, 0.768, 0.240, 0.873)]
     },
-    # 동관 1층
+
+    # ================= [동관 1층] =================
     "1F_EAST_XRAY": {
         "name": "동관 1층 영상의학과 외래촬영실", "short_name": "영상의학과 외래촬영실",
         "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:00~17:30",
         "boxes": [(0.516, 0.313, 0.554, 0.538), (0.505, 0.485, 0.534, 0.538)]
     },
-    # 동관 2층
+
+    # ================= [동관 2층] =================
     "2F_EAST_XRAY": {
         "name": "동관 2층 일반촬영실", "short_name": "일반촬영실",
         "floor": "2층", "floor_code": "2F", "building": "동관",
@@ -217,7 +230,8 @@ MAP_ROOMS = {
         "hours": "평일 08:30~17:30",
         "boxes": [(0.609, 0.735, 0.669, 0.990)]
     },
-    # 신관 1층
+
+    # ================= [신관 1층] =================
     "1F_NEW_BLOOD": {
         "name": "신관 1층 채혈실", "short_name": "신관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "신관",
@@ -230,7 +244,8 @@ MAP_ROOMS = {
         "hours": "평일 08:30~17:30",
         "boxes": [(0.907, 0.415, 0.998, 0.812)]
     },
-    # 신관 2층
+
+    # ================= [신관 2층] =================
     "2F_NEW_MR": {
         "name": "신관 2층 MR실", "short_name": "MR실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
@@ -279,7 +294,7 @@ PATIENT_EXAMS = [
 ]
 
 # ---------------------------------------------------------
-# 4. 시간·상황 규칙 엔진
+# 4. 시간·상황 매칭 규칙 엔진
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
@@ -301,7 +316,7 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 5. 이미지 탐색 및 도면 가공
+# 5. 이미지 탐색 및 실시간 컬러 매핑 함수
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -420,261 +435,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     return pil_img
 
-# ---------------------------------------------------------
-# 6. [핵심] 양손가락 핀치 줌 & 드래그 인터랙티브 뷰어 컴포넌트
-# ---------------------------------------------------------
-def render_pinch_zoom_viewer(pil_img, step_title, viewer_height=490):
-    buf = io.BytesIO()
-    pil_img.save(buf, format="PNG")
-    b64_img = base64.b64encode(buf.getvalue()).decode()
-    elem_id = f"viewer_{abs(hash(step_title)) % 100000}"
-
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <style>
-        body {{
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
-            overflow: hidden;
-            touch-action: none;
-        }}
-        .badge-bar {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-        }}
-        .step-badge {{
-            background-color: #005C5C;
-            color: white;
-            padding: 6px 14px;
-            border-radius: 8px;
-            font-size: 0.88rem;
-            font-weight: 700;
-        }}
-        .tip-badge {{
-            font-size: 0.78rem;
-            color: #555555;
-            background: #EEEEEE;
-            padding: 3px 8px;
-            border-radius: 6px;
-            font-weight: 600;
-        }}
-        .viewer-box {{
-            position: relative;
-            width: 100%;
-            height: {viewer_height}px;
-            background: #FFFFFF;
-            border: 2px solid #005C5C;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.06);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-sizing: border-box;
-        }}
-        .map-layer {{
-            position: absolute;
-            transform-origin: 0 0;
-            cursor: grab;
-            user-select: none;
-            will-change: transform;
-        }}
-        .map-layer:active {{
-            cursor: grabbing;
-        }}
-        .map-layer img {{
-            display: block;
-            max-width: none;
-            height: {viewer_height - 30}px;
-            pointer-events: none;
-        }}
-        .floating-ctrls {{
-            position: absolute;
-            right: 14px;
-            bottom: 14px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            z-index: 10;
-        }}
-        .btn-ctrl {{
-            width: 40px;
-            height: 40px;
-            background: #005C5C;
-            color: #FFFFFF;
-            border: none;
-            border-radius: 8px;
-            font-size: 1.25rem;
-            font-weight: bold;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-            cursor: pointer;
-            touch-action: manipulation;
-        }}
-        .btn-ctrl:active {{
-            background: #003A3A;
-            transform: scale(0.95);
-        }}
-    </style>
-    </head>
-    <body>
-    <div class="badge-bar">
-        <span class="step-badge">{step_title}</span>
-        <span class="tip-badge">🖐️ 두 손가락 핀치 줌 / 드래그 이동</span>
-    </div>
-    <div class="viewer-box" id="{elem_id}_box">
-        <div class="map-layer" id="{elem_id}_layer">
-            <img id="{elem_id}_img" src="data:image/png;base64,{b64_img}" />
-        </div>
-        <div class="floating-ctrls">
-            <button class="btn-ctrl" onclick="{elem_id}_zoomIn()">＋</button>
-            <button class="btn-ctrl" onclick="{elem_id}_zoomOut()">－</button>
-            <button class="btn-ctrl" onclick="{elem_id}_reset()" style="font-size:1.0rem;">⟲</button>
-        </div>
-    </div>
-
-    <script>
-        const cBox = document.getElementById('{elem_id}_box');
-        const cLayer = document.getElementById('{elem_id}_layer');
-        const cImg = document.getElementById('{elem_id}_img');
-
-        let scale = 1;
-        let posX = 0;
-        let posY = 0;
-        let isDrag = false;
-        let startX = 0, startY = 0;
-        let initDist = 0, initScale = 1;
-
-        function updateStyle() {{
-            cLayer.style.transform = `translate(${{posX}}px, ${{posY}}px) scale(${{scale}})`;
-        }}
-
-        function initFit() {{
-            const cw = cBox.clientWidth;
-            const ch = cBox.clientHeight;
-            const iw = cImg.naturalWidth || cImg.width || 1200;
-            const ih = cImg.naturalHeight || cImg.height || 550;
-            scale = Math.min((cw - 16) / iw, (ch - 16) / ih);
-            if (!scale || scale <= 0) scale = 0.55;
-            posX = (cw - (iw * scale)) / 2;
-            posY = (ch - (ih * scale)) / 2;
-            updateStyle();
-        }}
-
-        cImg.onload = initFit;
-        setTimeout(initFit, 120);
-
-        // PC 마우스 드래그 & 휠 줌
-        cBox.addEventListener('mousedown', (e) => {{
-            if (e.target.tagName === 'BUTTON') return;
-            isDrag = true;
-            startX = e.clientX - posX;
-            startY = e.clientY - posY;
-        }});
-        window.addEventListener('mousemove', (e) => {{
-            if (!isDrag) return;
-            posX = e.clientX - startX;
-            posY = e.clientY - startY;
-            updateStyle();
-        }});
-        window.addEventListener('mouseup', () => {{ isDrag = false; }});
-
-        cBox.addEventListener('wheel', (e) => {{
-            e.preventDefault();
-            const factor = 1.15;
-            const rect = cBox.getBoundingClientRect();
-            const mx = e.clientX - rect.left;
-            const my = e.clientY - rect.top;
-            let nextScale = e.deltaY < 0 ? scale * factor : scale / factor;
-            nextScale = Math.min(Math.max(0.2, nextScale), 5.0);
-            posX = mx - (mx - posX) * (nextScale / scale);
-            posY = my - (my - posY) * (nextScale / scale);
-            scale = nextScale;
-            updateStyle();
-        }}, {{ passive: false }});
-
-        // 스마트폰 터치: 두 손가락 핀치 투 줌 & 한 손가락 패닝
-        cBox.addEventListener('touchstart', (e) => {{
-            if (e.target.tagName === 'BUTTON') return;
-            if (e.touches.length === 1) {{
-                isDrag = true;
-                startX = e.touches[0].clientX - posX;
-                startY = e.touches[0].clientY - posY;
-            }} else if (e.touches.length === 2) {{
-                isDrag = false;
-                initDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                initScale = scale;
-            }}
-        }}, {{ passive: false }});
-
-        cBox.addEventListener('touchmove', (e) => {{
-            if (e.target.tagName === 'BUTTON') return;
-            e.preventDefault();
-            if (e.touches.length === 1 && isDrag) {{
-                posX = e.touches[0].clientX - startX;
-                posY = e.touches[0].clientY - startY;
-                updateStyle();
-            }} else if (e.touches.length === 2 && initDist > 0) {{
-                const curDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                let nextScale = initScale * (curDist / initDist);
-                nextScale = Math.min(Math.max(0.2, nextScale), 5.0);
-
-                const rect = cBox.getBoundingClientRect();
-                const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-                const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-
-                posX = midX - (midX - posX) * (nextScale / scale);
-                posY = midY - (midY - posY) * (nextScale / scale);
-                scale = nextScale;
-                updateStyle();
-            }}
-        }}, {{ passive: false }});
-
-        cBox.addEventListener('touchend', (e) => {{
-            if (e.touches.length < 2) initDist = 0;
-            if (e.touches.length === 0) isDrag = false;
-        }});
-
-        function {elem_id}_zoomIn() {{
-            const nextScale = Math.min(scale * 1.3, 5.0);
-            const cx = cBox.clientWidth / 2, cy = cBox.clientHeight / 2;
-            posX = cx - (cx - posX) * (nextScale / scale);
-            posY = cy - (cy - posY) * (nextScale / scale);
-            scale = nextScale;
-            updateStyle();
-        }}
-        function {elem_id}_zoomOut() {{
-            const nextScale = Math.max(scale / 1.3, 0.2);
-            const cx = cBox.clientWidth / 2, cy = cBox.clientHeight / 2;
-            posX = cx - (cx - posX) * (nextScale / scale);
-            posY = cy - (cy - posY) * (nextScale / scale);
-            scale = nextScale;
-            updateStyle();
-        }}
-        function {elem_id}_reset() {{
-            initFit();
-        }}
-    </script>
-    </body>
-    </html>
-    """
-    components.html(html_code, height=viewer_height + 40, scrolling=False)
-
 # =========================================================
 # PAGE 1: 나의 검사 일정 & 내 위치 선택 화면 (모바일 뷰)
 # =========================================================
@@ -689,7 +449,7 @@ if st.session_state.page == "home":
     st.markdown("#### 📅 나의 검사 일정")
     st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 눌러주세요.")
 
-    # 검사 일정 카드 및 개별 '길안내' 버튼
+    # 검사 일정 카드 및 개별 '길안내' 버튼 (2번째 이미지 스타일)
     for idx, ex in enumerate(PATIENT_EXAMS):
         with st.container():
             st.markdown(f"""
@@ -704,6 +464,7 @@ if st.session_state.page == "home":
             </div>
             """, unsafe_allow_html=True)
 
+            # 길안내 버튼 클릭 시 선택된 검사를 세션에 저장하고 즉시 'map' 페이지로 이동!
             if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
                 st.session_state.selected_exam_idx = idx
                 st.session_state.page = "map"
@@ -752,14 +513,15 @@ if st.session_state.page == "home":
             index=default_idx
         )
 
-    # 시간 테스트 옵션
+    # 시간 테스트 옵션 (접이식)
     with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)"):
         t_c1, t_c2 = st.columns(2)
         st.session_state.day_type = t_c1.selectbox("요일", ["평일(월~금)", "토요일", "일요일/공휴일"], index=0)
         st.session_state.time_str = t_c2.select_slider("시각", ["09:00", "14:20", "17:45", "19:10"], value=st.session_state.time_str)
 
+
 # =========================================================
-# PAGE 2: 지도 전용 화면 (핀치 줌 & 드래그 와이드 뷰)
+# PAGE 2: 지도 전용 화면 (가로로 시원하게 펼쳐지는 와이드 뷰)
 # =========================================================
 elif st.session_state.page == "map":
     # 1. 최상단 뒤로가기 버튼
@@ -778,7 +540,7 @@ elif st.session_state.page == "map":
     is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
     elev_info = ELEVATORS[s_meta["building"]]
 
-    # 2. 목적지 요약 배너
+    # 2. 목적지 요약 배너 (가로 와이드)
     st.markdown(f"""
     <div class="dest-banner">
         <div style="font-size:0.86rem; font-weight:700;">🟢 실시간 맞춤 길안내 목적지</div>
@@ -790,12 +552,13 @@ elif st.session_state.page == "map":
     </div>
     """, unsafe_allow_html=True)
 
+    # 범례
     leg_c1, leg_c2, leg_c3 = st.columns(3)
     leg_c1.markdown("🔴 **연한 빨간색**: 내 출발 위치")
     leg_c2.markdown("🟢 **연한 녹색**: 가야 할 목적지")
     leg_c3.markdown("🟠 **주황색 사각 박스**: 탑승/하차 엘리베이터")
 
-    # 3. 도면 렌더링 (핀치 줌 인터랙티브 뷰어 적용)
+    # 3. 실제 도면 이미지 로드 및 렌더링 (가로 폭 100% 꽉 차게 렌더링)
     path_2f = find_image("2F")
     path_1f = find_image("1F")
 
@@ -806,22 +569,25 @@ elif st.session_state.page == "map":
         arr_1f = clean_base_map(path_1f, "1F")
 
         if is_diff_floor:
-            # [1단계 지도] 출발 층 -> 엘리베이터 (핀치 줌 적용)
+            # [1단계 지도] 출발 층 -> 엘리베이터
+            st.markdown(f"<div class='map-step-badge'>1단계 지도 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
             base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
             img_s1 = draw_colored_map(base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV")
-            render_pinch_zoom_viewer(img_s1, f"1단계 : {s_meta['floor']} [{elev_info['name']}]로 이동")
+            st.image(img_s1, use_container_width=True)
 
-            # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실 (핀치 줌 적용)
+            # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실
+            st.markdown(f"<div class='map-step-badge'>2단계 지도 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착</div>", unsafe_allow_html=True)
             base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
             elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
             img_s2 = draw_colored_map(base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV")
-            render_pinch_zoom_viewer(img_s2, f"2단계 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착")
+            st.image(img_s2, use_container_width=True)
         else:
-            # 동일 층 지도 1장 (핀치 줌 적용)
+            # 동일 층 지도 1장
+            st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)</div>", unsafe_allow_html=True)
             base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             img_same = draw_colored_map(base_same, red_key=start_key, green_key=dest_key, mode="SAME")
-            render_pinch_zoom_viewer(img_same, f"{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)")
+            st.image(img_same, use_container_width=True)
 
     # 하단 질문 챗봇
     st.markdown("---")
