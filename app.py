@@ -37,11 +37,11 @@ if "sel_dest_floor" not in st.session_state:
 if "custom_dest_key" not in st.session_state:
     st.session_state.custom_dest_key = "2F_NEW_EYE"
 
-# 시간 설정 세션 (기본값: 평일 15:00)
+# 시간 설정 세션 (기본값: 평일 14:00)
 if "day_type" not in st.session_state:
     st.session_state.day_type = "평일(월~금)"
 if "time_str" not in st.session_state:
-    st.session_state.time_str = "15:00"
+    st.session_state.time_str = "14:00"
 
 # ---------------------------------------------------------
 # 2. 반응형 CSS
@@ -168,7 +168,7 @@ MAP_ROOMS = {
     "1F_WEST_BLOOD": {
         "name": "서관 1층 채혈실", "short_name": "서관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "서관",
-        "hours": "평일 06:10~18:30, 토 06:30~13:30",
+        "hours": "평일 06:10~18:30, 토 06:30~13:30 (주간 운영)",
         "boxes": [(0.238, 0.520, 0.320, 0.654)]
     },
     "1F_WEST_CTMR": {
@@ -286,9 +286,9 @@ MAP_ROOMS = {
         "boxes": [(0.223, 0.106, 0.307, 0.292), (0.223, 0.319, 0.259, 0.585), (0.267, 0.398, 0.307, 0.585)]
     },
     "2F_WEST_DIAG": {
-        "name": "서관 2층 진단검사의학과 (CT/MR 채혈실)", "short_name": "진단검사의학과(CT/MR채혈)",
+        "name": "서관 2층 진단검사의학과 (CT/MR 채혈실)", "short_name": "진단검사의학과(CT/MR채혈실)",
         "floor": "2층", "floor_code": "2F", "building": "서관",
-        "hours": "야간/휴일 전용 (18:30~익일 06:10)",
+        "hours": "야간/당직 운영 (18:30~익일 06:10)",
         "boxes": [(0.005, 0.228, 0.096, 0.692)]
     },
     "2F_WEST_PREADM": {
@@ -414,65 +414,59 @@ ELEVATORS = {
 PATIENT_EXAMS = [
     {
         "title": "[검사] 일반촬영 (흉부 X-ray)",
-        "sub": "평일 08:00~17:30 동관 1층 / 그 외 시간 동관 2층",
+        "sub": "평일 주간(08:00~17:30) 동관 1층 / 그 외 시간 동관 2층",
         "default_key": "1F_EAST_XRAY",
         "cat": "XRAY"
     },
     {
-        "title": "[검사] 가정의학과 검체검사",
-        "sub": "서관 1층 채혈실(평일 06:10~18:30) / 야간 서관 2층",
+        "title": "[검사] 가정의학과 검체검사 (외래채혈)",
+        "sub": "주간(06:10~18:30) 서관 1층 / 야간(18:30~) 서관 2층",
         "default_key": "1F_WEST_BLOOD",
         "cat": "BLOOD"
     },
     {
         "title": "[검사] 복부 조영 CT",
-        "sub": "서관 2층 CT실(평일 08:00~18:00)",
+        "sub": "서관 2층 CT실 (평일 08:00~18:00)",
         "default_key": "2F_WEST_CT",
         "cat": "CT"
     },
     {
         "title": "[검사] 뇌 신경 MRI",
-        "sub": "신관 2층 신관 MR실(평일 08:00~18:00)",
+        "sub": "신관 2층 신관 MR실 (평일 08:00~18:00)",
         "default_key": "2F_NEW_MR",
         "cat": "MR"
     }
 ]
 
 # ---------------------------------------------------------
-# 4. 시간·상황 매칭 규칙 엔진 (일반촬영 X-ray 시간별 동적 분기 탑재)
+# 4. 시간·상황 매칭 규칙 엔진 (X-ray & 채혈 각 2대 케이스 분기)
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
     t_val = int(time_str.replace(":", ""))
-    start_bldg = MAP_ROOMS[start_key]["building"]
 
-    # 1) 일반촬영(X-ray) 시간별 분기 규칙
+    # 1) 일반촬영(X-ray) 2대 케이스:
     if cat == "XRAY":
-        # 평일 08:00 ~ 17:30 ➔ 동관 1층 영상의학과 외래촬영실
+        # 케이스 1: 평일 주간 (08:00 ~ 17:30) ➔ 동관 1층 영상의학과 외래촬영실
         if day_type == "평일(월~금)" and 800 <= t_val <= 1730:
             return "1F_EAST_XRAY"
-        # 그 외 시간대 (17:30 이후, 08:00 이전, 주말/공휴일) ➔ 동관 2층 일반촬영실
+        # 케이스 2: 그 외 야간/당직/주말 ➔ 동관 2층 일반촬영실
         else:
             return "2F_EAST_XRAY"
 
-    # 2) 채혈실 시간별 분기 규칙
+    # 2) 외래 채혈(BLOOD) 2대 케이스:
     elif cat == "BLOOD":
-        if day_type == "평일(월~금)":
-            if 610 <= t_val <= 1730:
-                return "1F_NEW_BLOOD" if start_bldg == "신관" else "1F_WEST_BLOOD"
-            elif 1730 < t_val <= 1830:
-                return "1F_WEST_BLOOD"
-            else:
-                return "2F_WEST_DIAG"
-        elif day_type == "토요일":
-            return "1F_WEST_BLOOD" if 630 <= t_val <= 1730 else "2F_WEST_DIAG"
+        # 케이스 1: 주간 운영 (06:10 ~ 18:30) ➔ 서관 1층 채혈실
+        if 610 <= t_val <= 1830:
+            return "1F_WEST_BLOOD"
+        # 케이스 2: 야간/당직 운영 (18:30 ~ 익일 06:10) ➔ 서관 2층 CT/MR 채혈실 (진단검사의학과)
         else:
-            return "1F_WEST_BLOOD" if 630 <= t_val <= 1730 else "2F_WEST_DIAG"
+            return "2F_WEST_DIAG"
 
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 5. 이미지 로드 및 도면 가공 (방 관통 방지 복도 동선)
+# 5. 도면 가공 (방 관통 방지 복도 동선 적용)
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -569,7 +563,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
     lw = max(4, int(W * 0.003))
     r_rad = max(9, int(W * 0.0075))
 
-    # 방을 관통하지 않는 층별 중앙 복도선 (1층 67.2% / 2층 66.5%)
     corridor_y = int(H * 0.672) if floor_code == "1F" else int(H * 0.665)
 
     if mode == "SAME" and red_res and green_res and red_key != green_key:
@@ -611,12 +604,11 @@ if st.session_state.page == "home":
     st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 눌러주세요.")
 
     for idx, ex in enumerate(PATIENT_EXAMS):
-        # 현재 시간 규칙에 따라 배정된 검사실 실시간 계산
         assigned_key = resolve_dest_key(ex, st.session_state.start_key, st.session_state.day_type, st.session_state.time_str)
         assigned_meta = MAP_ROOMS[assigned_key]
 
-        # 일반촬영(X-ray)일 경우 실시간 시간 배정 결과를 시각적으로 명시
-        if ex["cat"] == "XRAY":
+        # 시간대별 동적 분기 검사(X-ray 및 채혈)에 실시간 배정 라벨 부착
+        if ex["cat"] in ["XRAY", "BLOOD"]:
             sub_display = f"{assigned_meta['name']} ({assigned_meta['building']} {assigned_meta['floor']}) <span style='color:#005C5C; font-weight:700;'>[{st.session_state.time_str} 배정]</span>"
         else:
             sub_display = f"{assigned_meta['name']} ({assigned_meta['building']} {assigned_meta['floor']})"
@@ -736,20 +728,39 @@ if st.session_state.page == "home":
         st.session_state.page = "map"
         st.rerun()
 
-    # 4) 현재 요일 및 시간 설정 (평일 15:00 / 18:00 테스트 버튼 내장)
+    # 4) 현재 요일 및 시간 설정 (X-ray & 채혈 2대 케이스 원클릭 비교 버튼 탑재)
     with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)", expanded=False):
-        st.caption("👉 아래 원클릭 버튼을 누르면 평일 15:00과 18:00 안내를 즉시 비교해 볼 수 있습니다.")
-        btn_c1, btn_c2 = st.columns(2)
-        if btn_c1.button("🕒 평일 15:00 설정 (주간 ➔ 동관 1층)", use_container_width=True):
+        st.caption("👉 버튼을 누르면 각 검사의 주간/야간 검사실 배정 결과를 원클릭으로 비교할 수 있습니다.")
+        
+        # [비교 세트 1] 일반촬영 (X-ray) 비교
+        st.markdown("**📸 일반촬영 (X-ray) 주/야간 원클릭 비교**")
+        x_c1, x_c2 = st.columns(2)
+        if x_c1.button("🕒 평일 15:00 (주간 ➔ 동관 1층)", use_container_width=True, key="btn_xray_day"):
             st.session_state.day_type = "평일(월~금)"
             st.session_state.time_str = "15:00"
+            st.session_state.selected_exam_idx = 0
             st.rerun()
-        if btn_c2.button("🌙 평일 18:00 설정 (야간 ➔ 동관 2층)", use_container_width=True):
+        if x_c2.button("🌙 평일 18:00 (야간 ➔ 동관 2층)", use_container_width=True, key="btn_xray_night"):
             st.session_state.day_type = "평일(월~금)"
             st.session_state.time_str = "18:00"
+            st.session_state.selected_exam_idx = 0
             st.rerun()
 
-        st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+        # [비교 세트 2] 외래 채혈 (검체검사) 비교
+        st.markdown("**🩸 외래 채혈실 주/야간 원클릭 비교**")
+        b_c1, b_c2 = st.columns(2)
+        if b_c1.button("☀️ 평일 14:00 (주간 ➔ 서관 1층 채혈실)", use_container_width=True, key="btn_blood_day"):
+            st.session_state.day_type = "평일(월~금)"
+            st.session_state.time_str = "14:00"
+            st.session_state.selected_exam_idx = 1
+            st.rerun()
+        if b_c2.button("🌙 평일 19:00 (야간 ➔ 서관 2층 CT/MR 채혈실)", use_container_width=True, key="btn_blood_night"):
+            st.session_state.day_type = "평일(월~금)"
+            st.session_state.time_str = "19:00"
+            st.session_state.selected_exam_idx = 1
+            st.rerun()
+
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         t_c1, t_c2 = st.columns(2)
         day_types = ["평일(월~금)", "토요일", "일요일/공휴일"]
         st.session_state.day_type = t_c1.selectbox(
@@ -758,9 +769,9 @@ if st.session_state.page == "home":
             index=day_types.index(st.session_state.day_type) if st.session_state.day_type in day_types else 0
         )
 
-        time_options = ["08:30", "11:20", "14:20", "15:00", "17:30", "17:45", "18:00", "19:10"]
+        time_options = ["08:30", "11:20", "14:00", "15:00", "17:30", "18:00", "19:00", "20:00"]
         if st.session_state.time_str not in time_options:
-            st.session_state.time_str = "15:00"
+            st.session_state.time_str = "14:00"
         st.session_state.time_str = t_c2.select_slider(
             "시각",
             time_options,
@@ -791,13 +802,22 @@ elif st.session_state.page == "map":
     elev_info = ELEVATORS[s_meta["building"]]
 
     # 시간대별 사유 텍스트
-    if st.session_state.nav_mode == "exam" and PATIENT_EXAMS[st.session_state.selected_exam_idx]["cat"] == "XRAY":
-        if dest_key == "1F_EAST_XRAY":
-            reason_txt = f"평일 주간 운영 시간(08:00~17:30)에 해당하여 <b>동관 1층 영상의학과 외래촬영실</b>로 안내합니다."
+    if st.session_state.nav_mode == "exam":
+        cat = PATIENT_EXAMS[st.session_state.selected_exam_idx]["cat"]
+        if cat == "XRAY":
+            if dest_key == "1F_EAST_XRAY":
+                reason_txt = f"평일 주간 운영 시간(08:00~17:30)에 해당하여 <b>동관 1층 영상의학과 외래촬영실</b>로 안내합니다."
+            else:
+                reason_txt = f"평일 17:30 이후 시간대에 해당하여 <b>동관 2층 일반촬영실</b>로 자동 전환하여 안내합니다."
+        elif cat == "BLOOD":
+            if dest_key == "1F_WEST_BLOOD":
+                reason_txt = f"주간 운영 시간(06:10~18:30)에 해당하여 <b>서관 1층 채혈실</b>로 안내합니다."
+            else:
+                reason_txt = f"야간 운영 시간(18:30 이후)에 해당하여 <b>서관 2층 CT/MR 채혈실 (진단검사의학과)</b>로 자동 전환하여 안내합니다."
         else:
-            reason_txt = f"평일 17:30 이후 시간대에 해당하여 <b>동관 2층 일반촬영실</b>로 자동 전환하여 안내합니다."
+            reason_txt = f"현재 시각({st.session_state.day_type} {st.session_state.time_str}) 정상 운영 검사실로 안내합니다."
     else:
-        reason_txt = f"현재 시각({st.session_state.day_type} {st.session_state.time_str}) 정상 운영 검사실로 안내합니다."
+        reason_txt = f"직접 선택하신 목적지로 이동 안내합니다."
 
     # 목적지 요약 배너
     st.markdown(f"""
@@ -857,6 +877,6 @@ elif st.session_state.page == "map":
     # 하단 AI 챗봇
     st.markdown("---")
     with st.expander("💬 길 안내 AI에게 질문하기"):
-        q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 흉부촬영 어디로 가나요?")
+        q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 채혈실 어디로 가나요?")
         if q:
             st.success(f"현재 시각({st.session_state.day_type} {st.session_state.time_str}) 기준, {d_meta['name']}(으)로 이동하시면 됩니다. 지도에 표시된 복도 동선을 따라가 주세요!")
