@@ -1,13 +1,10 @@
 import os
-import io
-import base64
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
-import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
-# 1. 기본 레이아웃 설정 (와이드 모드 활성화)
+# 1. 기본 레이아웃 설정
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="서울아산병원 검사실 길 안내",
@@ -24,7 +21,7 @@ if "nav_mode" not in st.session_state:
 if "selected_exam_idx" not in st.session_state:
     st.session_state.selected_exam_idx = 0
 
-# 내 출발 위치 세션
+# 출발 위치 세션
 if "sel_bldg" not in st.session_state:
     st.session_state.sel_bldg = "동관"
 if "sel_floor" not in st.session_state:
@@ -32,13 +29,13 @@ if "sel_floor" not in st.session_state:
 if "start_key" not in st.session_state:
     st.session_state.start_key = "2F_EAST_XRAY"
 
-# 검사 외 찾아갈 장소(도착지) 세션
+# 검사 외 찾아갈 장소 세션
 if "sel_dest_bldg" not in st.session_state:
-    st.session_state.sel_dest_bldg = "서관"
+    st.session_state.sel_dest_bldg = "신관"
 if "sel_dest_floor" not in st.session_state:
-    st.session_state.sel_dest_floor = "1층"
+    st.session_state.sel_dest_floor = "2층"
 if "custom_dest_key" not in st.session_state:
-    st.session_state.custom_dest_key = "1F_WEST_BLOOD"
+    st.session_state.custom_dest_key = "2F_NEW_EYE"
 
 # 시간 설정 세션
 if "day_type" not in st.session_state:
@@ -47,7 +44,7 @@ if "time_str" not in st.session_state:
     st.session_state.time_str = "14:20"
 
 # ---------------------------------------------------------
-# 2. 반응형 CSS (홈 화면: 480px 모바일 뷰 / 지도 화면: 1200px 와이드 뷰)
+# 2. 반응형 CSS (홈: 480px / 지도: 1200px 와이드)
 # ---------------------------------------------------------
 if st.session_state.page == "home":
     container_max_width = "480px"
@@ -58,13 +55,10 @@ else:
 
 st.markdown(f"""
 <style>
-/* 상단 기본 헤더 투명화 */
 header[data-testid="stHeader"] {{
     background: transparent !important;
     height: 1.5rem !important;
 }}
-
-/* 페이지 상태별 가로 폭 동적 조절 */
 .block-container {{
     max-width: {container_max_width} !important;
     padding-top: {padding_top} !important;
@@ -74,8 +68,6 @@ header[data-testid="stHeader"] {{
     margin: 0 auto !important;
     transition: max-width 0.3s ease;
 }}
-
-/* 상단 서울아산병원 길안내 헤더 */
 .app-header {{
     background: linear-gradient(135deg, #005C5C 0%, #003A3A 100%);
     color: white;
@@ -100,8 +92,6 @@ header[data-testid="stHeader"] {{
     color: #D2EBEB;
     line-height: 1.35;
 }}
-
-/* 검사 일정 카드 */
 .exam-row-wrap {{
     display: flex;
     align-items: flex-start;
@@ -133,8 +123,6 @@ header[data-testid="stHeader"] {{
     color: #6B7280;
     line-height: 1.45;
 }}
-
-/* 녹색 사각 '길안내' 버튼 */
 div.stButton > button {{
     background-color: #2E6930 !important;
     color: #FFFFFF !important;
@@ -150,8 +138,6 @@ div.stButton > button:hover {{
     background-color: #235225 !important;
     color: #FFFFFF !important;
 }}
-
-/* 목적지 안내 배너 */
 .dest-banner {{
     background-color: #EBF7EE;
     border: 2px solid #28A745;
@@ -160,11 +146,22 @@ div.stButton > button:hover {{
     margin: 10px 0 16px 0;
     color: #155724;
 }}
+.map-step-badge {{
+    background-color: #005C5C;
+    color: white;
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    font-weight: 700;
+    margin-top: 14px;
+    margin-bottom: 8px;
+    display: inline-block;
+}}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 3. 관 · 층 · 검사실 좌표 데이터 (모든 관/층 최소 4개 이상 완비)
+# 3. 실제 도면(1층·2층) 기반 실제 검사실·시설 좌표 사전
 # ---------------------------------------------------------
 MAP_ROOMS = {
     # ================= [서관 1층] =================
@@ -172,63 +169,37 @@ MAP_ROOMS = {
         "name": "서관 1층 채혈실", "short_name": "서관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "평일 06:10~18:30, 토 06:30~13:30",
-        "boxes": [(0.241, 0.520, 0.317, 0.654)]
+        "boxes": [(0.238, 0.520, 0.320, 0.654)]
     },
     "1F_WEST_CTMR": {
         "name": "서관 1층 외래/응급 CT·MR실", "short_name": "외래/응급 CT·MR실",
         "floor": "1층", "floor_code": "1F", "building": "서관",
-        "hours": "상시 운영 (외래·응급 예약)",
-        "boxes": [(0.068, 0.514, 0.106, 0.654)]
+        "hours": "상시 운영 (외래·응급)",
+        "boxes": [(0.065, 0.508, 0.105, 0.654)]
     },
     "1F_WEST_PHARM": {
-        "name": "서관 1층 외래약국", "short_name": "서관 외래약국",
+        "name": "서관 1층 외래약국", "short_name": "외래약국",
         "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "평일 08:30~18:00",
-        "boxes": [(0.170, 0.660, 0.225, 0.780)]
+        "boxes": [(0.180, 0.670, 0.215, 0.800)]
     },
     "1F_WEST_RECORD": {
-        "name": "서관 1층 의무기록/영상발급창구", "short_name": "의무기록·영상발급",
+        "name": "서관 1층 의무기록·영상발급 창구", "short_name": "의무기록/영상발급",
         "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.115, 0.670, 0.165, 0.770)]
+        "boxes": [(0.105, 0.670, 0.145, 0.800)]
     },
-    "1F_WEST_PAY": {
-        "name": "서관 1층 원무수납창구", "short_name": "서관 원무수납창구",
+    "1F_WEST_ADMIN": {
+        "name": "서관 1층 원무상담실·서관통합창구", "short_name": "서관통합창구 (입·원무)",
         "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "평일 08:00~17:30",
-        "boxes": [(0.245, 0.665, 0.315, 0.760)]
+        "boxes": [(0.245, 0.670, 0.320, 0.790)]
     },
-
-    # ================= [서관 2층] =================
-    "2F_WEST_CT": {
-        "name": "서관 2층 CT실", "short_name": "CT실 / 투시조영실",
-        "floor": "2층", "floor_code": "2F", "building": "서관",
-        "hours": "평일 08:00~18:00",
-        "boxes": [(0.223, 0.106, 0.307, 0.292), (0.223, 0.319, 0.259, 0.585), (0.267, 0.398, 0.307, 0.585)]
-    },
-    "2F_WEST_DIAG": {
-        "name": "서관 2층 CT/MR 채혈실 (진단검사의학과)", "short_name": "진단검사의학과 (CT/MR 채혈실)",
-        "floor": "2층", "floor_code": "2F", "building": "서관",
-        "hours": "야간/휴일 전용 (18:30~익일 06:10)",
-        "boxes": [(0.008, 0.228, 0.096, 0.692)]
-    },
-    "2F_WEST_PREADM": {
-        "name": "서관 2층 입원전검사실", "short_name": "입원전검사실",
-        "floor": "2층", "floor_code": "2F", "building": "서관",
-        "hours": "평일 08:30~17:00 (토요일 미운영)",
-        "boxes": [(0.160, 0.718, 0.193, 0.909), (0.193, 0.718, 0.215, 0.822)]
-    },
-    "2F_WEST_US": {
-        "name": "서관 2층 초음파실", "short_name": "초음파실",
-        "floor": "2층", "floor_code": "2F", "building": "서관",
-        "hours": "평일 08:00~17:30",
-        "boxes": [(0.240, 0.718, 0.313, 0.873), (0.222, 0.768, 0.240, 0.873)]
-    },
-    "2F_WEST_BREAST": {
-        "name": "서관 2층 유방·두경부검사실", "short_name": "유방·두경부검사실",
-        "floor": "2층", "floor_code": "2F", "building": "서관",
+    "1F_WEST_LIVER": {
+        "name": "서관 1층 간담도췌외과", "short_name": "간담도췌외과",
+        "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.150, 0.260, 0.210, 0.450)]
+        "boxes": [(0.018, 0.215, 0.105, 0.505)]
     },
 
     # ================= [동관 1층] =================
@@ -236,57 +207,37 @@ MAP_ROOMS = {
         "name": "동관 1층 영상의학과 외래촬영실", "short_name": "영상의학과 외래촬영실",
         "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:00~17:30",
-        "boxes": [(0.516, 0.313, 0.554, 0.538), (0.505, 0.485, 0.534, 0.538)]
+        "boxes": [(0.508, 0.313, 0.550, 0.540)]
+    },
+    "1F_EAST_NEURO": {
+        "name": "동관 1층 신경과·파킨슨병센터·신경외과", "short_name": "신경과·신경외과",
+        "floor": "1층", "floor_code": "1F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.562, 0.330, 0.665, 0.505)]
     },
     "1F_EAST_INJECT": {
         "name": "동관 1층 동관주사실", "short_name": "동관주사실",
         "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:00~18:00",
-        "boxes": [(0.388, 0.575, 0.440, 0.655)]
-    },
-    "1F_EAST_HEART": {
-        "name": "동관 1층 심장병원 외래", "short_name": "심장병원 외래",
-        "floor": "1층", "floor_code": "1F", "building": "동관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.548, 0.705, 0.635, 0.910)]
+        "boxes": [(0.385, 0.555, 0.445, 0.660)]
     },
     "1F_EAST_ADMIT": {
-        "name": "동관 1층 입원지원센터 / 대외협력실", "short_name": "입원지원센터·대외협력실",
+        "name": "동관 1층 입원지원센터·대외협력실", "short_name": "입원지원센터",
         "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.565, 0.525, 0.640, 0.655)]
+        "boxes": [(0.585, 0.520, 0.665, 0.660)]
     },
-
-    # ================= [동관 2층] =================
-    "2F_EAST_XRAY": {
-        "name": "동관 2층 일반촬영실", "short_name": "일반촬영실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 08:00~18:00",
-        "boxes": [(0.344, 0.275, 0.425, 0.355), (0.344, 0.355, 0.416, 0.556), (0.397, 0.556, 0.415, 0.638)]
-    },
-    "2F_EAST_MR": {
-        "name": "동관 2층 MR실", "short_name": "동관 MR실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 07:30~20:00",
-        "boxes": [(0.344, 0.007, 0.443, 0.249)]
-    },
-    "2F_EAST_HEART": {
-        "name": "동관 2층 심장검사실", "short_name": "심장검사실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
+    "1F_EAST_DIAB": {
+        "name": "동관 1층 당뇨병센터·내분비내과", "short_name": "당뇨병센터·내분비내과",
+        "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.609, 0.735, 0.669, 0.990)]
+        "boxes": [(0.360, 0.340, 0.465, 0.550)]
     },
-    "2F_EAST_NEURO": {
-        "name": "동관 2층 신경과 / 파킨슨센터", "short_name": "신경과·파킨슨센터",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
+    "1F_EAST_HEART": {
+        "name": "동관 1층 심장병원", "short_name": "심장병원",
+        "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.550, 0.340, 0.645, 0.515)]
-    },
-    "2F_EAST_ENT": {
-        "name": "동관 2층 이비인후과 검사실", "short_name": "이비인후과 검사실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.660, 0.105, 0.720, 0.280)]
+        "boxes": [(0.562, 0.725, 0.665, 0.920)]
     },
 
     # ================= [신관 1층] =================
@@ -294,51 +245,163 @@ MAP_ROOMS = {
         "name": "신관 1층 채혈실", "short_name": "신관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "신관",
         "hours": "평일 06:10~17:30 (주말·공휴일 미운영)",
-        "boxes": [(0.749, 0.550, 0.800, 0.635)]
+        "boxes": [(0.742, 0.550, 0.795, 0.635)]
     },
     "1F_NEW_PED_XRAY": {
         "name": "신관 1층 소아영상의학과", "short_name": "소아영상의학과",
         "floor": "1층", "floor_code": "1F", "building": "신관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.907, 0.415, 0.998, 0.812)]
+        "boxes": [(0.898, 0.415, 0.970, 0.812)]
     },
-    "1F_NEW_PED_ECG": {
-        "name": "신관 1층 소아심장·소아심전도검사실", "short_name": "소아심장·심전도검사실",
+    "1F_NEW_OBGYN": {
+        "name": "신관 1층 산부인과", "short_name": "산부인과",
         "floor": "1층", "floor_code": "1F", "building": "신관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.865, 0.315, 0.935, 0.395)]
+        "boxes": [(0.680, 0.295, 0.795, 0.535)]
     },
-    "1F_NEW_PED_INJECT": {
+    "1F_NEW_ENT": {
+        "name": "신관 1층 이비인후과·이비인후과 검사실", "short_name": "이비인후과·검사실",
+        "floor": "1층", "floor_code": "1F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.680, 0.065, 0.865, 0.258)]
+    },
+    "1F_NEW_PED_ECG": {
+        "name": "신관 1층 소아심장·소아심전도검사실", "short_name": "소아심장·심전도실",
+        "floor": "1층", "floor_code": "1F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.898, 0.275, 0.970, 0.350)]
+    },
+    "1F_NEW_PED_INJ": {
         "name": "신관 1층 소아주사실", "short_name": "소아주사실",
         "floor": "1층", "floor_code": "1F", "building": "신관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.865, 0.395, 0.935, 0.450)]
+        "boxes": [(0.898, 0.350, 0.970, 0.415)]
     },
 
-    # ================= [신관 2층] =================
+    # ================= [서관 2층] =================
+    "2F_WEST_CT": {
+        "name": "서관 2층 CT실 / 투시조영실", "short_name": "CT실 / 투시조영실",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "평일 08:00~18:00",
+        "boxes": [(0.223, 0.106, 0.307, 0.292), (0.223, 0.319, 0.259, 0.585), (0.267, 0.398, 0.307, 0.585)]
+    },
+    "2F_WEST_DIAG": {
+        "name": "서관 2층 진단검사의학과 (CT/MR 채혈실)", "short_name": "진단검사의학과(CT/MR채혈)",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "야간/휴일 전용 (18:30~익일 06:10)",
+        "boxes": [(0.005, 0.228, 0.096, 0.692)]
+    },
+    "2F_WEST_PREADM": {
+        "name": "서관 2층 입원전검사실", "short_name": "입원전검사실",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "평일 08:30~17:00 (토요일 미운영)",
+        "boxes": [(0.155, 0.718, 0.193, 0.909)]
+    },
+    "2F_WEST_US": {
+        "name": "서관 2층 초음파실", "short_name": "서관 초음파실",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "평일 08:00~17:30",
+        "boxes": [(0.220, 0.718, 0.310, 0.873)]
+    },
+    "2F_WEST_BREAST": {
+        "name": "서관 2층 유방·두경부 영상의학검사실", "short_name": "유방·두경부검사실",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "평일 08:00~17:30",
+        "boxes": [(0.116, 0.320, 0.215, 0.585)]
+    },
+    "2F_WEST_BRONCHO": {
+        "name": "서관 2층 기관지내시경·호흡기검사실", "short_name": "기관지내시경·호흡기",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.220, 0.875, 0.310, 0.990)]
+    },
+
+    # ================= [동관 2층] =================
+    "2F_EAST_XRAY": {
+        "name": "동관 2층 영상의학과 일반촬영실", "short_name": "동관 일반촬영실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:00~18:00",
+        "boxes": [(0.340, 0.275, 0.420, 0.355), (0.340, 0.355, 0.410, 0.556), (0.390, 0.556, 0.410, 0.638)]
+    },
+    "2F_EAST_MR": {
+        "name": "동관 2층 MR실", "short_name": "동관 MR실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 07:30~20:00",
+        "boxes": [(0.340, 0.007, 0.435, 0.255)]
+    },
+    "2F_EAST_ANGIO": {
+        "name": "동관 2층 혈관조영실 (1~9)", "short_name": "혈관조영실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:00~18:00",
+        "boxes": [(0.440, 0.007, 0.575, 0.255)]
+    },
+    "2F_EAST_NUC": {
+        "name": "동관 2층 동관 핵의학과 (혈액/영상검사실)", "short_name": "핵의학과 검사실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:00~17:30",
+        "boxes": [(0.485, 0.275, 0.655, 0.640)]
+    },
+    "2F_EAST_BRAIN": {
+        "name": "동관 2층 뇌신경검사실 (근전도,뇌파,수면,유발전위)", "short_name": "뇌신경검사실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.340, 0.730, 0.448, 0.970)]
+    },
+    "2F_EAST_HEART": {
+        "name": "동관 2층 심장검사실 (심전도,심초음파,홀터)", "short_name": "심장검사실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.595, 0.730, 0.655, 0.970)]
+    },
+    "2F_EAST_CONSULT": {
+        "name": "동관 2층 외래회송 상담실", "short_name": "외래회송 상담실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.455, 0.730, 0.548, 0.865)]
+    },
+
+    # ================= [신관 2층 (실제 도면 기반 등록)] =================
     "2F_NEW_MR": {
         "name": "신관 2층 MR실", "short_name": "신관 MR실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:00~18:00",
-        "boxes": [(0.696, 0.252, 0.829, 0.449)]
+        "boxes": [(0.685, 0.255, 0.815, 0.450)]
     },
     "2F_NEW_XRAY_US": {
-        "name": "신관 2층 일반촬영실·초음파실", "short_name": "일반촬영실·초음파실",
+        "name": "신관 2층 일반촬영실·투시조영실·초음파실", "short_name": "일반촬영·초음파실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:00~17:30",
-        "boxes": [(0.696, 0.449, 0.829, 0.605), (0.707, 0.605, 0.820, 0.682)]
+        "boxes": [(0.695, 0.450, 0.815, 0.685)]
     },
-    "2F_NEW_OBGYN": {
-        "name": "신관 2층 산부인과 검사실", "short_name": "산부인과 검사실",
+    "2F_NEW_DENTAL": {
+        "name": "신관 2층 치과 / 소아치과", "short_name": "치과·소아치과",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.665, 0.380, 0.745, 0.540)]
+        "boxes": [(0.685, 0.035, 0.878, 0.225)]
     },
-    "2F_NEW_NEURO": {
-        "name": "신관 2층 신경과·뇌신경외과", "short_name": "신경과·뇌신경외과",
+    "2F_NEW_EYE": {
+        "name": "신관 2층 안과 / 안과검사실 / 소아안과", "short_name": "안과·안과검사실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:30~17:30",
-        "boxes": [(0.565, 0.380, 0.645, 0.540)]
+        "boxes": [(0.895, 0.250, 0.975, 0.685)]
+    },
+    "2F_NEW_BMD": {
+        "name": "신관 2층 신관 핵의학과 골밀도검사실", "short_name": "골밀도검사실",
+        "floor": "2층", "floor_code": "2F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.685, 0.725, 0.728, 0.970)]
+    },
+    "2F_NEW_PLASTIC": {
+        "name": "신관 2층 성형외과", "short_name": "성형외과",
+        "floor": "2층", "floor_code": "2F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.730, 0.780, 0.810, 0.970)]
+    },
+    "2F_NEW_DERMA": {
+        "name": "신관 2층 피부과", "short_name": "피부과",
+        "floor": "2층", "floor_code": "2F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.908, 0.780, 0.965, 0.970)]
     }
 }
 
@@ -357,7 +420,7 @@ PATIENT_EXAMS = [
     },
     {
         "title": "[검사] 일반촬영 (흉부 X-ray)",
-        "sub": "동관 2층 일반촬영실(평;08:00~18:00)",
+        "sub": "동관 2층 영상의학과 일반촬영실(평;08:00~18:00)",
         "default_key": "2F_EAST_XRAY",
         "cat": "XRAY"
     },
@@ -369,14 +432,14 @@ PATIENT_EXAMS = [
     },
     {
         "title": "[검사] 뇌 신경 MRI",
-        "sub": "신관 2층 MR실(평;08:00~18:00)",
+        "sub": "신관 2층 신관 MR실(평;08:00~18:00)",
         "default_key": "2F_NEW_MR",
         "cat": "MR"
     }
 ]
 
 # ---------------------------------------------------------
-# 4. 시간·상황 규칙 엔진
+# 4. 시간·상황 매칭 규칙 엔진
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
@@ -398,7 +461,7 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 5. 이미지 탐색 및 도면 가공 (방 관통 방지 복도 동선 적용)
+# 5. 이미지 탐색 및 도면 가공 (방 관통 방지 복도 동선)
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -438,9 +501,9 @@ def clean_base_map(img_path, floor_code):
     arr = np.array(img)
     H, W, _ = arr.shape
     if floor_code == "2F":
-        teals = [(0.340, 0.270, 0.430, 0.642), (0.692, 0.248, 0.833, 0.452), (0.220, 0.872, 0.316, 0.916)]
+        teals = [(0.340, 0.270, 0.430, 0.642), (0.685, 0.248, 0.833, 0.452), (0.220, 0.872, 0.316, 0.916)]
     else:
-        teals = [(0.015, 0.215, 0.108, 0.505), (0.335, 0.555, 0.391, 0.660), (0.905, 0.412, 0.999, 0.816)]
+        teals = [(0.015, 0.215, 0.108, 0.505), (0.335, 0.555, 0.391, 0.660), (0.895, 0.412, 0.999, 0.816)]
 
     for (x1p, y1p, x2p, y2p) in teals:
         x1, y1, x2, y2 = int(x1p*W), int(y1p*H), int(x2p*W), int(y2p*H)
@@ -453,17 +516,9 @@ def clean_base_map(img_path, floor_code):
         arr[y1:y2, x1:x2] = sub.astype(np.uint8)
     return arr
 
-def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode="SAME", floor_code=None):
+def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode="SAME", floor_code="2F"):
     arr = base_arr.copy()
     H, W, _ = arr.shape
-
-    if not floor_code:
-        if green_key and green_key in MAP_ROOMS:
-            floor_code = MAP_ROOMS[green_key].get("floor_code", "2F")
-        elif red_key and red_key in MAP_ROOMS:
-            floor_code = MAP_ROOMS[red_key].get("floor_code", "2F")
-        else:
-            floor_code = "2F"
 
     def fill_box(key, rgb):
         if not key or key not in MAP_ROOMS:
@@ -474,13 +529,13 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
             x1, y1, x2, y2 = int(x1p*W), int(y1p*H), int(x2p*W), int(y2p*H)
             centers.append(((x1+x2)//2, (y1+y2)//2))
             sub = arr[y1:y2, x1:x2]
-            is_bg = (sub[:,:,0] > 242) & (sub[:,:,1] > 244) & (sub[:,:,2] > 244)
+            is_bg = (sub[:,:,0] > 240) & (sub[:,:,1] > 242) & (sub[:,:,2] > 242)
             sub[is_bg] = rgb
             arr[y1:y2, x1:x2] = sub
         return (int(np.mean([c[0] for c in centers])), int(np.mean([c[1] for c in centers]))), boxes
 
-    red_res = fill_box(red_key, [255, 200, 200])     # 내 위치: 연한 빨간색
-    green_res = fill_box(green_key, [188, 245, 200]) # 목적지: 연한 녹색
+    red_res = fill_box(red_key, [255, 200, 200])     # 내 위치: 연빨강
+    green_res = fill_box(green_key, [188, 245, 200]) # 목적지: 연녹색
 
     pil_img = Image.fromarray(arr)
     draw = ImageDraw.Draw(pil_img)
@@ -502,6 +557,8 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     lw = max(4, int(W * 0.003))
     r_rad = max(9, int(W * 0.0075))
+
+    # 방을 관통하지 않는 층별 중앙 복도 Y좌표 (1층 약 67.2% / 2층 약 66.5%)
     corridor_y = int(H * 0.672) if floor_code == "1F" else int(H * 0.665)
 
     if mode == "SAME" and red_res and green_res and red_key != green_key:
@@ -527,261 +584,8 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     return pil_img
 
-# ---------------------------------------------------------
-# 6. 양손가락 핀치 줌 & 드래그 인터랙티브 뷰어 컴포넌트
-# ---------------------------------------------------------
-def render_pinch_zoom_viewer(pil_img, step_title, viewer_height=490):
-    buf = io.BytesIO()
-    pil_img.save(buf, format="PNG")
-    b64_img = base64.b64encode(buf.getvalue()).decode()
-    elem_id = f"viewer_{abs(hash(step_title)) % 100000}"
-
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <style>
-        body {{
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
-            overflow: hidden;
-            touch-action: none;
-        }}
-        .badge-bar {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-        }}
-        .step-badge {{
-            background-color: #005C5C;
-            color: white;
-            padding: 6px 14px;
-            border-radius: 8px;
-            font-size: 0.88rem;
-            font-weight: 700;
-        }}
-        .tip-badge {{
-            font-size: 0.78rem;
-            color: #555555;
-            background: #EEEEEE;
-            padding: 3px 8px;
-            border-radius: 6px;
-            font-weight: 600;
-        }}
-        .viewer-box {{
-            position: relative;
-            width: 100%;
-            height: {viewer_height}px;
-            background: #FFFFFF;
-            border: 2px solid #005C5C;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.06);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-sizing: border-box;
-        }}
-        .map-layer {{
-            position: absolute;
-            transform-origin: 0 0;
-            cursor: grab;
-            user-select: none;
-            will-change: transform;
-        }}
-        .map-layer:active {{
-            cursor: grabbing;
-        }}
-        .map-layer img {{
-            display: block;
-            max-width: none;
-            height: {viewer_height - 30}px;
-            pointer-events: none;
-        }}
-        .floating-ctrls {{
-            position: absolute;
-            right: 14px;
-            bottom: 14px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            z-index: 10;
-        }}
-        .btn-ctrl {{
-            width: 40px;
-            height: 40px;
-            background: #005C5C;
-            color: #FFFFFF;
-            border: none;
-            border-radius: 8px;
-            font-size: 1.25rem;
-            font-weight: bold;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-            cursor: pointer;
-            touch-action: manipulation;
-        }}
-        .btn-ctrl:active {{
-            background: #003A3A;
-            transform: scale(0.95);
-        }}
-    </style>
-    </head>
-    <body>
-    <div class="badge-bar">
-        <span class="step-badge">{step_title}</span>
-        <span class="tip-badge">🖐️ 두 손가락 핀치 줌 / 드래그 이동</span>
-    </div>
-    <div class="viewer-box" id="{elem_id}_box">
-        <div class="map-layer" id="{elem_id}_layer">
-            <img id="{elem_id}_img" src="data:image/png;base64,{b64_img}" />
-        </div>
-        <div class="floating-ctrls">
-            <button class="btn-ctrl" onclick="{elem_id}_zoomIn()">＋</button>
-            <button class="btn-ctrl" onclick="{elem_id}_zoomOut()">－</button>
-            <button class="btn-ctrl" onclick="{elem_id}_reset()" style="font-size:1.0rem;">⟲</button>
-        </div>
-    </div>
-
-    <script>
-        const cBox = document.getElementById('{elem_id}_box');
-        const cLayer = document.getElementById('{elem_id}_layer');
-        const cImg = document.getElementById('{elem_id}_img');
-
-        let scale = 1;
-        let posX = 0;
-        let posY = 0;
-        let isDrag = false;
-        let startX = 0, startY = 0;
-        let initDist = 0, initScale = 1;
-
-        function updateStyle() {{
-            cLayer.style.transform = `translate(${{posX}}px, ${{posY}}px) scale(${{scale}})`;
-        }}
-
-        function initFit() {{
-            const cw = cBox.clientWidth;
-            const ch = cBox.clientHeight;
-            const iw = cImg.naturalWidth || cImg.width || 1200;
-            const ih = cImg.naturalHeight || cImg.height || 550;
-            scale = Math.min((cw - 16) / iw, (ch - 16) / ih);
-            if (!scale || scale <= 0) scale = 0.55;
-            posX = (cw - (iw * scale)) / 2;
-            posY = (ch - (ih * scale)) / 2;
-            updateStyle();
-        }}
-
-        cImg.onload = initFit;
-        setTimeout(initFit, 120);
-
-        cBox.addEventListener('mousedown', (e) => {{
-            if (e.target.tagName === 'BUTTON') return;
-            isDrag = true;
-            startX = e.clientX - posX;
-            startY = e.clientY - posY;
-        }});
-        window.addEventListener('mousemove', (e) => {{
-            if (!isDrag) return;
-            posX = e.clientX - startX;
-            posY = e.clientY - startY;
-            updateStyle();
-        }});
-        window.addEventListener('mouseup', () => {{ isDrag = false; }});
-
-        cBox.addEventListener('wheel', (e) => {{
-            e.preventDefault();
-            const factor = 1.15;
-            const rect = cBox.getBoundingClientRect();
-            const mx = e.clientX - rect.left;
-            const my = e.clientY - rect.top;
-            let nextScale = e.deltaY < 0 ? scale * factor : scale / factor;
-            nextScale = Math.min(Math.max(0.2, nextScale), 5.0);
-            posX = mx - (mx - posX) * (nextScale / scale);
-            posY = my - (my - posY) * (nextScale / scale);
-            scale = nextScale;
-            updateStyle();
-        }}, {{ passive: false }});
-
-        cBox.addEventListener('touchstart', (e) => {{
-            if (e.target.tagName === 'BUTTON') return;
-            if (e.touches.length === 1) {{
-                isDrag = true;
-                startX = e.touches[0].clientX - posX;
-                startY = e.touches[0].clientY - posY;
-            }} else if (e.touches.length === 2) {{
-                isDrag = false;
-                initDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                initScale = scale;
-            }}
-        }}, {{ passive: false }});
-
-        cBox.addEventListener('touchmove', (e) => {{
-            if (e.target.tagName === 'BUTTON') return;
-            e.preventDefault();
-            if (e.touches.length === 1 && isDrag) {{
-                posX = e.touches[0].clientX - startX;
-                posY = e.touches[0].clientY - startY;
-                updateStyle();
-            }} else if (e.touches.length === 2 && initDist > 0) {{
-                const curDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                let nextScale = initScale * (curDist / initDist);
-                nextScale = Math.min(Math.max(0.2, nextScale), 5.0);
-
-                const rect = cBox.getBoundingClientRect();
-                const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-                const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-
-                posX = midX - (midX - posX) * (nextScale / scale);
-                posY = midY - (midY - posY) * (nextScale / scale);
-                scale = nextScale;
-                updateStyle();
-            }}
-        }}, {{ passive: false }});
-
-        cBox.addEventListener('touchend', (e) => {{
-            if (e.touches.length < 2) initDist = 0;
-            if (e.touches.length === 0) isDrag = false;
-        }});
-
-        function {elem_id}_zoomIn() {{
-            const nextScale = Math.min(scale * 1.3, 5.0);
-            const cx = cBox.clientWidth / 2, cy = cBox.clientHeight / 2;
-            posX = cx - (cx - posX) * (nextScale / scale);
-            posY = cy - (cy - posY) * (nextScale / scale);
-            scale = nextScale;
-            updateStyle();
-        }}
-        function {elem_id}_zoomOut() {{
-            const nextScale = Math.max(scale / 1.3, 0.2);
-            const cx = cBox.clientWidth / 2, cy = cBox.clientHeight / 2;
-            posX = cx - (cx - posX) * (nextScale / scale);
-            posY = cy - (cy - posY) * (nextScale / scale);
-            scale = nextScale;
-            updateStyle();
-        }}
-        function {elem_id}_reset() {{
-            initFit();
-        }}
-    </script>
-    </body>
-    </html>
-    """
-    components.html(html_code, height=viewer_height + 40, scrolling=False)
-
 # =========================================================
-# PAGE 1: 나의 검사 일정 & 내 위치 & 검사 외 장소 선택 화면
+# PAGE 1: 검사 일정 & 내 위치 & 검사 외 장소 선택 화면
 # =========================================================
 if st.session_state.page == "home":
     st.markdown("""
@@ -819,10 +623,10 @@ if st.session_state.page == "home":
 
     # 2) 현재 내 위치 선택 (3칸 분할)
     st.markdown("#### 📍 현재 내 위치 선택")
-    loc_col1, loc_col2, loc_col3 = st.columns([1.0, 0.9, 1.5])
-
     bldg_options = ["서관", "동관", "신관"]
     floor_options = ["1층", "2층"]
+
+    loc_col1, loc_col2, loc_col3 = st.columns([1.0, 0.9, 1.5])
 
     with loc_col1:
         if st.session_state.sel_bldg not in bldg_options:
@@ -863,7 +667,7 @@ if st.session_state.page == "home":
 
     st.markdown("---")
 
-    # 3) 검사 외 찾아갈 장소 선택 (요청 사항 반영)
+    # 3) 검사 외 찾아갈 장소 선택 (3칸 분할)
     st.markdown("#### 🧭 검사 외 찾아갈 장소 선택")
     st.caption("※ 검사 일정 외 편의시설이나 다른 검사실을 찾으실 때만 선택해 주세요.")
 
@@ -871,7 +675,7 @@ if st.session_state.page == "home":
 
     with dest_col1:
         if st.session_state.sel_dest_bldg not in bldg_options:
-            st.session_state.sel_dest_bldg = "서관"
+            st.session_state.sel_dest_bldg = "신관"
         st.session_state.sel_dest_bldg = st.selectbox(
             "관 선택",
             options=bldg_options,
@@ -881,7 +685,7 @@ if st.session_state.page == "home":
 
     with dest_col2:
         if st.session_state.sel_dest_floor not in floor_options:
-            st.session_state.sel_dest_floor = "1층"
+            st.session_state.sel_dest_floor = "2층"
         st.session_state.sel_dest_floor = st.selectbox(
             "층 선택",
             options=floor_options,
@@ -906,23 +710,22 @@ if st.session_state.page == "home":
             key="sb_dest_room"
         )
 
-    # 선택한 장소로 바로 길안내를 시작하는 전용 버튼
     if st.button("🧭 이 장소로 길안내 시작", use_container_width=True, key="btn_go_custom"):
         st.session_state.nav_mode = "custom"
         st.session_state.page = "map"
         st.rerun()
 
-    # 시간 테스트 옵션
+    # 간이 시간 설정
     with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)"):
         t_c1, t_c2 = st.columns(2)
         st.session_state.day_type = t_c1.selectbox("요일", ["평일(월~금)", "토요일", "일요일/공휴일"], index=0)
         st.session_state.time_str = t_c2.select_slider("시각", ["09:00", "14:20", "17:45", "19:10"], value=st.session_state.time_str)
 
 # =========================================================
-# PAGE 2: 지도 전용 화면 (핀치 줌 & 드래그 와이드 뷰)
+# PAGE 2: 지도 전용 화면 (확대축소 제외, 네이티브 st.image 출력)
 # =========================================================
 elif st.session_state.page == "map":
-    # 최상단 뒤로가기 버튼
+    # 1. 상단 뒤로가기 버튼
     b_col1, b_col2 = st.columns([1.2, 2.8])
     with b_col1:
         if st.button("⬅️ 검사 목록 및 위치 변경으로 돌아가기", use_container_width=True):
@@ -931,7 +734,6 @@ elif st.session_state.page == "map":
 
     start_key = st.session_state.start_key
 
-    # 길안내 목적지 결정 (일정 검사 또는 직접 선택한 장소)
     if st.session_state.nav_mode == "custom":
         dest_key = st.session_state.custom_dest_key
     else:
@@ -943,7 +745,7 @@ elif st.session_state.page == "map":
     is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
     elev_info = ELEVATORS[s_meta["building"]]
 
-    # 상단 목적지 요약 배너
+    # 2. 목적지 요약 배너
     st.markdown(f"""
     <div class="dest-banner">
         <div style="font-size:0.86rem; font-weight:700;">🟢 실시간 맞춤 길안내 목적지</div>
@@ -960,7 +762,7 @@ elif st.session_state.page == "map":
     leg_c2.markdown("🟢 **연한 녹색**: 가야 할 목적지")
     leg_c3.markdown("🟠 **주황색 사각 박스**: 탑승/하차 엘리베이터")
 
-    # 도면 렌더링
+    # 3. 도면 렌더링 (확대·축소 스크립트 없이 고화질 st.image로 선명하게 직접 표시)
     path_2f = find_image("2F")
     path_1f = find_image("1F")
 
@@ -971,28 +773,31 @@ elif st.session_state.page == "map":
         arr_1f = clean_base_map(path_1f, "1F")
 
         if is_diff_floor:
-            # 1단계 지도 (출발 층 -> 엘리베이터)
+            # [1단계 지도] 출발 층 -> 엘리베이터
+            st.markdown(f"<div class='map-step-badge'>1단계 지도 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
             base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
             img_s1 = draw_colored_map(
                 base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV", floor_code=s_meta["floor_code"]
             )
-            render_pinch_zoom_viewer(img_s1, f"1단계 : {s_meta['floor']} [{elev_info['name']}]로 이동")
+            st.image(img_s1, use_container_width=True)
 
-            # 2단계 지도 (엘리베이터 하차 -> 목적지)
+            # [2단계 지도] 도착 층 엘리베이터 -> 목적지
+            st.markdown(f"<div class='map-step-badge'>2단계 지도 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착</div>", unsafe_allow_html=True)
             base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
             elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
             img_s2 = draw_colored_map(
                 base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV", floor_code=d_meta["floor_code"]
             )
-            render_pinch_zoom_viewer(img_s2, f"2단계 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착")
+            st.image(img_s2, use_container_width=True)
         else:
-            # 동일 층 지도
+            # 동일 층 지도 1장
+            st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)</div>", unsafe_allow_html=True)
             base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             img_same = draw_colored_map(
                 base_same, red_key=start_key, green_key=dest_key, mode="SAME", floor_code=s_meta["floor_code"]
             )
-            render_pinch_zoom_viewer(img_same, f"{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)")
+            st.image(img_same, use_container_width=True)
 
     # 하단 챗봇
     st.markdown("---")
