@@ -36,7 +36,7 @@ if st.session_state.page == "home":
     container_max_width = "480px"
     padding_top = "2.8rem"
 else:
-    container_max_width = "1200px"  # 지도 화면에서는 가로로 쫙 넓게 펼쳐짐!
+    container_max_width = "1200px"
     padding_top = "2.0rem"
 
 st.markdown(f"""
@@ -316,7 +316,7 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 5. 이미지 탐색 및 실시간 컬러 매핑 함수
+# 5. 이미지 탐색 및 실시간 컬러 매핑 함수 (동선 최적화 적용)
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -371,9 +371,18 @@ def clean_base_map(img_path, floor_code):
         arr[y1:y2, x1:x2] = sub.astype(np.uint8)
     return arr
 
-def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode="SAME"):
+def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode="SAME", floor_code=None):
     arr = base_arr.copy()
     H, W, _ = arr.shape
+
+    # floor_code 자동 판별 (인자로 받지 못한 경우 자동 매칭)
+    if not floor_code:
+        if green_key and green_key in MAP_ROOMS:
+            floor_code = MAP_ROOMS[green_key].get("floor_code", "2F")
+        elif red_key and red_key in MAP_ROOMS:
+            floor_code = MAP_ROOMS[red_key].get("floor_code", "2F")
+        else:
+            floor_code = "2F"
 
     def fill_box(key, rgb):
         if not key or key not in MAP_ROOMS:
@@ -412,24 +421,33 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     lw = max(4, int(W * 0.003))
     r_rad = max(9, int(W * 0.0075))
-    corridor_y = int(H * 0.65)
+
+    # ★ 방을 가로지르지 않는 층별 중앙 메인 복도(통로) Y좌표 설정
+    # 1층: 신관/동관/서관 채혈실 아래쪽과 심장병원/원무창구 위쪽 사이의 메인 복도 (약 67.2%)
+    # 2층: 초음파실/심장검사실 위쪽 중앙 복도 (약 66.5%)
+    corridor_y = int(H * 0.672) if floor_code == "1F" else int(H * 0.665)
 
     if mode == "SAME" and red_res and green_res and red_key != green_key:
         sx, sy = red_res[0]
         dx, dy = green_res[0]
+        # 출발지 -> 복도 -> 복도 직진 -> 목적지
         draw.line([(sx, sy), (sx, corridor_y), (dx, corridor_y), (dx, dy)], fill=(0, 102, 102), width=lw)
         draw.ellipse([sx-r_rad, sy-r_rad, sx+r_rad, sy+r_rad], fill=(217, 48, 37), outline=(255, 255, 255), width=2)
         draw.ellipse([dx-r_rad, dy-r_rad, dx+r_rad, dy+r_rad], fill=(30, 142, 62), outline=(255, 255, 255), width=2)
+
     elif mode == "TO_ELEV" and red_res and elev_center:
         sx, sy = red_res[0]
         ex, ey = elev_center
-        draw.line([(sx, sy), (sx, ey), (ex, ey)], fill=(217, 48, 37), width=lw)
+        # 출발지 -> 복도 -> 엘리베이터 (방 관통 차단)
+        draw.line([(sx, sy), (sx, corridor_y), (ex, corridor_y), (ex, ey)], fill=(217, 48, 37), width=lw)
         draw.ellipse([sx-r_rad, sy-r_rad, sx+r_rad, sy+r_rad], fill=(217, 48, 37), outline=(255, 255, 255), width=2)
         draw.ellipse([ex-r_rad, ey-r_rad, ex+r_rad, ey+r_rad], fill=(255, 140, 0), outline=(255, 255, 255), width=2)
+
     elif mode == "FROM_ELEV" and elev_center and green_res:
         ex, ey = elev_center
         dx, dy = green_res[0]
-        draw.line([(ex, ey), (dx, ey), (dx, dy)], fill=(30, 142, 62), width=lw)
+        # 엘리베이터 -> 복도로 내려옴 -> 복도 따라 직진 -> 목적지 입구 진입 (방 관통 차단)
+        draw.line([(ex, ey), (ex, corridor_y), (dx, corridor_y), (dx, dy)], fill=(30, 142, 62), width=lw)
         draw.ellipse([ex-r_rad, ey-r_rad, ex+r_rad, ey+r_rad], fill=(255, 140, 0), outline=(255, 255, 255), width=2)
         draw.ellipse([dx-r_rad, dy-r_rad, dx+r_rad, dy+r_rad], fill=(30, 142, 62), outline=(255, 255, 255), width=2)
 
@@ -449,7 +467,7 @@ if st.session_state.page == "home":
     st.markdown("#### 📅 나의 검사 일정")
     st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 눌러주세요.")
 
-    # 검사 일정 카드 및 개별 '길안내' 버튼 (2번째 이미지 스타일)
+    # 검사 일정 카드 및 개별 '길안내' 버튼
     for idx, ex in enumerate(PATIENT_EXAMS):
         with st.container():
             st.markdown(f"""
@@ -464,7 +482,6 @@ if st.session_state.page == "home":
             </div>
             """, unsafe_allow_html=True)
 
-            # 길안내 버튼 클릭 시 선택된 검사를 세션에 저장하고 즉시 'map' 페이지로 이동!
             if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
                 st.session_state.selected_exam_idx = idx
                 st.session_state.page = "map"
@@ -496,7 +513,7 @@ if st.session_state.page == "home":
             index=floor_list.index(st.session_state.sel_floor)
         )
 
-    # 선택된 [관] + [층]의 검사실만 자동 필터링
+    # 선택된 [관] + [층]의 검사실 자동 필터링
     filtered_keys = [
         k for k, v in MAP_ROOMS.items()
         if v["building"] == st.session_state.sel_bldg and v["floor"] == st.session_state.sel_floor
@@ -513,15 +530,13 @@ if st.session_state.page == "home":
             index=default_idx
         )
 
-    # 시간 테스트 옵션 (접이식)
     with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)"):
         t_c1, t_c2 = st.columns(2)
         st.session_state.day_type = t_c1.selectbox("요일", ["평일(월~금)", "토요일", "일요일/공휴일"], index=0)
         st.session_state.time_str = t_c2.select_slider("시각", ["09:00", "14:20", "17:45", "19:10"], value=st.session_state.time_str)
 
-
 # =========================================================
-# PAGE 2: 지도 전용 화면 (가로로 시원하게 펼쳐지는 와이드 뷰)
+# PAGE 2: 지도 전용 화면 (와이드 뷰)
 # =========================================================
 elif st.session_state.page == "map":
     # 1. 최상단 뒤로가기 버튼
@@ -540,7 +555,7 @@ elif st.session_state.page == "map":
     is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
     elev_info = ELEVATORS[s_meta["building"]]
 
-    # 2. 목적지 요약 배너 (가로 와이드)
+    # 2. 목적지 요약 배너
     st.markdown(f"""
     <div class="dest-banner">
         <div style="font-size:0.86rem; font-weight:700;">🟢 실시간 맞춤 길안내 목적지</div>
@@ -558,7 +573,7 @@ elif st.session_state.page == "map":
     leg_c2.markdown("🟢 **연한 녹색**: 가야 할 목적지")
     leg_c3.markdown("🟠 **주황색 사각 박스**: 탑승/하차 엘리베이터")
 
-    # 3. 실제 도면 이미지 로드 및 렌더링 (가로 폭 100% 꽉 차게 렌더링)
+    # 3. 도면 렌더링
     path_2f = find_image("2F")
     path_1f = find_image("1F")
 
@@ -573,25 +588,31 @@ elif st.session_state.page == "map":
             st.markdown(f"<div class='map-step-badge'>1단계 지도 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
             base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
-            img_s1 = draw_colored_map(base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV")
+            img_s1 = draw_colored_map(
+                base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV", floor_code=s_meta["floor_code"]
+            )
             st.image(img_s1, use_container_width=True)
 
-            # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실
+            # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실 (방 관통 없이 복도 경유!)
             st.markdown(f"<div class='map-step-badge'>2단계 지도 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착</div>", unsafe_allow_html=True)
             base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
             elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
-            img_s2 = draw_colored_map(base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV")
+            img_s2 = draw_colored_map(
+                base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV", floor_code=d_meta["floor_code"]
+            )
             st.image(img_s2, use_container_width=True)
         else:
             # 동일 층 지도 1장
             st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)</div>", unsafe_allow_html=True)
             base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
-            img_same = draw_colored_map(base_same, red_key=start_key, green_key=dest_key, mode="SAME")
+            img_same = draw_colored_map(
+                base_same, red_key=start_key, green_key=dest_key, mode="SAME", floor_code=s_meta["floor_code"]
+            )
             st.image(img_same, use_container_width=True)
 
-    # 하단 질문 챗봇
+    # 하단 챗봇
     st.markdown("---")
     with st.expander("💬 길 안내 AI에게 질문하기"):
         q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 채혈실 어떻게 가나요?")
         if q:
-            st.success(f"현재 위치({s_meta['name']})에서 {d_meta['name']}(으)로 이동하시면 됩니다. 지도에 표시된 동선을 따라가 주세요!")
+            st.success(f"현재 위치({s_meta['name']})에서 {d_meta['name']}(으)로 이동하시면 됩니다. 지도에 표시된 복도 동선을 따라가 주세요!")
