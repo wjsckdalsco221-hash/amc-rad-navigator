@@ -1,7 +1,10 @@
 import os
+import io
+import base64
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
+import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
 # 1. 기본 레이아웃 설정 (와이드 모드 활성화)
@@ -13,41 +16,55 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화 (페이지: 'home' 또는 'map')
+# 세션 상태 초기화
 if "page" not in st.session_state:
     st.session_state.page = "home"
+if "nav_mode" not in st.session_state:
+    st.session_state.nav_mode = "exam"  # 'exam' 또는 'custom'
 if "selected_exam_idx" not in st.session_state:
     st.session_state.selected_exam_idx = 0
+
+# 내 출발 위치 세션
 if "sel_bldg" not in st.session_state:
     st.session_state.sel_bldg = "동관"
 if "sel_floor" not in st.session_state:
     st.session_state.sel_floor = "2층"
 if "start_key" not in st.session_state:
     st.session_state.start_key = "2F_EAST_XRAY"
+
+# 검사 외 찾아갈 장소(도착지) 세션
+if "sel_dest_bldg" not in st.session_state:
+    st.session_state.sel_dest_bldg = "서관"
+if "sel_dest_floor" not in st.session_state:
+    st.session_state.sel_dest_floor = "1층"
+if "custom_dest_key" not in st.session_state:
+    st.session_state.custom_dest_key = "1F_WEST_BLOOD"
+
+# 시간 설정 세션
 if "day_type" not in st.session_state:
     st.session_state.day_type = "평일(월~금)"
 if "time_str" not in st.session_state:
     st.session_state.time_str = "14:20"
 
 # ---------------------------------------------------------
-# 2. 동적 반응형 CSS (홈 화면: 480px 모바일 뷰 / 지도 화면: 1200px 와이드 뷰)
+# 2. 반응형 CSS (홈 화면: 480px 모바일 뷰 / 지도 화면: 1200px 와이드 뷰)
 # ---------------------------------------------------------
 if st.session_state.page == "home":
     container_max_width = "480px"
-    padding_top = "2.8rem"
+    padding_top = "2.6rem"
 else:
     container_max_width = "1200px"
     padding_top = "2.0rem"
 
 st.markdown(f"""
 <style>
-/* Streamlit 상단 기본 헤더 투명화 */
+/* 상단 기본 헤더 투명화 */
 header[data-testid="stHeader"] {{
     background: transparent !important;
     height: 1.5rem !important;
 }}
 
-/* 페이지 상태에 따라 가로 폭 동적 조절 */
+/* 페이지 상태별 가로 폭 동적 조절 */
 .block-container {{
     max-width: {container_max_width} !important;
     padding-top: {padding_top} !important;
@@ -58,7 +75,7 @@ header[data-testid="stHeader"] {{
     transition: max-width 0.3s ease;
 }}
 
-/* 상단 서울아산병원 길안내 헤더 박스 */
+/* 상단 서울아산병원 길안내 헤더 */
 .app-header {{
     background: linear-gradient(135deg, #005C5C 0%, #003A3A 100%);
     color: white;
@@ -84,7 +101,7 @@ header[data-testid="stHeader"] {{
     line-height: 1.35;
 }}
 
-/* 검사 일정 카드 스타일 */
+/* 검사 일정 카드 */
 .exam-row-wrap {{
     display: flex;
     align-items: flex-start;
@@ -117,15 +134,15 @@ header[data-testid="stHeader"] {{
     line-height: 1.45;
 }}
 
-/* 녹색 '길안내' 사각 버튼 스타일 */
+/* 녹색 사각 '길안내' 버튼 */
 div.stButton > button {{
     background-color: #2E6930 !important;
     color: #FFFFFF !important;
     border: none !important;
-    border-radius: 4px !important;
+    border-radius: 6px !important;
     font-weight: 700 !important;
     font-size: 0.98rem !important;
-    padding: 0.5rem 1.2rem !important;
+    padding: 0.52rem 1.2rem !important;
     width: 100% !important;
     box-shadow: 0 2px 4px rgba(0,0,0,0.08) !important;
 }}
@@ -140,27 +157,14 @@ div.stButton > button:hover {{
     border: 2px solid #28A745;
     border-radius: 12px;
     padding: 14px 18px;
-    margin: 12px 0 16px 0;
+    margin: 10px 0 16px 0;
     color: #155724;
-}}
-
-/* 1단계 / 2단계 지도 타이틀 뱃지 */
-.map-step-badge {{
-    background-color: #005C5C;
-    color: white;
-    padding: 6px 14px;
-    border-radius: 8px;
-    font-size: 0.92rem;
-    font-weight: 700;
-    margin-top: 14px;
-    margin-bottom: 8px;
-    display: inline-block;
 }}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 3. 관(서관/동관/신관) · 층(1층/2층) · 세부 위치 좌표 데이터
+# 3. 관 · 층 · 검사실 좌표 데이터 (모든 관/층 최소 4개 이상 완비)
 # ---------------------------------------------------------
 MAP_ROOMS = {
     # ================= [서관 1층] =================
@@ -175,6 +179,24 @@ MAP_ROOMS = {
         "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "상시 운영 (외래·응급 예약)",
         "boxes": [(0.068, 0.514, 0.106, 0.654)]
+    },
+    "1F_WEST_PHARM": {
+        "name": "서관 1층 외래약국", "short_name": "서관 외래약국",
+        "floor": "1층", "floor_code": "1F", "building": "서관",
+        "hours": "평일 08:30~18:00",
+        "boxes": [(0.170, 0.660, 0.225, 0.780)]
+    },
+    "1F_WEST_RECORD": {
+        "name": "서관 1층 의무기록/영상발급창구", "short_name": "의무기록·영상발급",
+        "floor": "1층", "floor_code": "1F", "building": "서관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.115, 0.670, 0.165, 0.770)]
+    },
+    "1F_WEST_PAY": {
+        "name": "서관 1층 원무수납창구", "short_name": "서관 원무수납창구",
+        "floor": "1층", "floor_code": "1F", "building": "서관",
+        "hours": "평일 08:00~17:30",
+        "boxes": [(0.245, 0.665, 0.315, 0.760)]
     },
 
     # ================= [서관 2층] =================
@@ -202,6 +224,12 @@ MAP_ROOMS = {
         "hours": "평일 08:00~17:30",
         "boxes": [(0.240, 0.718, 0.313, 0.873), (0.222, 0.768, 0.240, 0.873)]
     },
+    "2F_WEST_BREAST": {
+        "name": "서관 2층 유방·두경부검사실", "short_name": "유방·두경부검사실",
+        "floor": "2층", "floor_code": "2F", "building": "서관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.150, 0.260, 0.210, 0.450)]
+    },
 
     # ================= [동관 1층] =================
     "1F_EAST_XRAY": {
@@ -209,6 +237,24 @@ MAP_ROOMS = {
         "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:00~17:30",
         "boxes": [(0.516, 0.313, 0.554, 0.538), (0.505, 0.485, 0.534, 0.538)]
+    },
+    "1F_EAST_INJECT": {
+        "name": "동관 1층 동관주사실", "short_name": "동관주사실",
+        "floor": "1층", "floor_code": "1F", "building": "동관",
+        "hours": "평일 08:00~18:00",
+        "boxes": [(0.388, 0.575, 0.440, 0.655)]
+    },
+    "1F_EAST_HEART": {
+        "name": "동관 1층 심장병원 외래", "short_name": "심장병원 외래",
+        "floor": "1층", "floor_code": "1F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.548, 0.705, 0.635, 0.910)]
+    },
+    "1F_EAST_ADMIT": {
+        "name": "동관 1층 입원지원센터 / 대외협력실", "short_name": "입원지원센터·대외협력실",
+        "floor": "1층", "floor_code": "1F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.565, 0.525, 0.640, 0.655)]
     },
 
     # ================= [동관 2층] =================
@@ -219,7 +265,7 @@ MAP_ROOMS = {
         "boxes": [(0.344, 0.275, 0.425, 0.355), (0.344, 0.355, 0.416, 0.556), (0.397, 0.556, 0.415, 0.638)]
     },
     "2F_EAST_MR": {
-        "name": "동관 2층 MR실", "short_name": "MR실",
+        "name": "동관 2층 MR실", "short_name": "동관 MR실",
         "floor": "2층", "floor_code": "2F", "building": "동관",
         "hours": "평일 07:30~20:00",
         "boxes": [(0.344, 0.007, 0.443, 0.249)]
@@ -229,6 +275,18 @@ MAP_ROOMS = {
         "floor": "2층", "floor_code": "2F", "building": "동관",
         "hours": "평일 08:30~17:30",
         "boxes": [(0.609, 0.735, 0.669, 0.990)]
+    },
+    "2F_EAST_NEURO": {
+        "name": "동관 2층 신경과 / 파킨슨센터", "short_name": "신경과·파킨슨센터",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.550, 0.340, 0.645, 0.515)]
+    },
+    "2F_EAST_ENT": {
+        "name": "동관 2층 이비인후과 검사실", "short_name": "이비인후과 검사실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.660, 0.105, 0.720, 0.280)]
     },
 
     # ================= [신관 1층] =================
@@ -244,10 +302,22 @@ MAP_ROOMS = {
         "hours": "평일 08:30~17:30",
         "boxes": [(0.907, 0.415, 0.998, 0.812)]
     },
+    "1F_NEW_PED_ECG": {
+        "name": "신관 1층 소아심장·소아심전도검사실", "short_name": "소아심장·심전도검사실",
+        "floor": "1층", "floor_code": "1F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.865, 0.315, 0.935, 0.395)]
+    },
+    "1F_NEW_PED_INJECT": {
+        "name": "신관 1층 소아주사실", "short_name": "소아주사실",
+        "floor": "1층", "floor_code": "1F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.865, 0.395, 0.935, 0.450)]
+    },
 
     # ================= [신관 2층] =================
     "2F_NEW_MR": {
-        "name": "신관 2층 MR실", "short_name": "MR실",
+        "name": "신관 2층 MR실", "short_name": "신관 MR실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:00~18:00",
         "boxes": [(0.696, 0.252, 0.829, 0.449)]
@@ -257,6 +327,18 @@ MAP_ROOMS = {
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:00~17:30",
         "boxes": [(0.696, 0.449, 0.829, 0.605), (0.707, 0.605, 0.820, 0.682)]
+    },
+    "2F_NEW_OBGYN": {
+        "name": "신관 2층 산부인과 검사실", "short_name": "산부인과 검사실",
+        "floor": "2층", "floor_code": "2F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.665, 0.380, 0.745, 0.540)]
+    },
+    "2F_NEW_NEURO": {
+        "name": "신관 2층 신경과·뇌신경외과", "short_name": "신경과·뇌신경외과",
+        "floor": "2층", "floor_code": "2F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.565, 0.380, 0.645, 0.540)]
     }
 }
 
@@ -294,7 +376,7 @@ PATIENT_EXAMS = [
 ]
 
 # ---------------------------------------------------------
-# 4. 시간·상황 매칭 규칙 엔진
+# 4. 시간·상황 규칙 엔진
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
@@ -316,7 +398,7 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 5. 이미지 탐색 및 실시간 컬러 매핑 함수 (동선 최적화 적용)
+# 5. 이미지 탐색 및 도면 가공 (방 관통 방지 복도 동선 적용)
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -375,7 +457,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
     arr = base_arr.copy()
     H, W, _ = arr.shape
 
-    # floor_code 자동 판별 (인자로 받지 못한 경우 자동 매칭)
     if not floor_code:
         if green_key and green_key in MAP_ROOMS:
             floor_code = MAP_ROOMS[green_key].get("floor_code", "2F")
@@ -421,16 +502,11 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     lw = max(4, int(W * 0.003))
     r_rad = max(9, int(W * 0.0075))
-
-    # ★ 방을 가로지르지 않는 층별 중앙 메인 복도(통로) Y좌표 설정
-    # 1층: 신관/동관/서관 채혈실 아래쪽과 심장병원/원무창구 위쪽 사이의 메인 복도 (약 67.2%)
-    # 2층: 초음파실/심장검사실 위쪽 중앙 복도 (약 66.5%)
     corridor_y = int(H * 0.672) if floor_code == "1F" else int(H * 0.665)
 
     if mode == "SAME" and red_res and green_res and red_key != green_key:
         sx, sy = red_res[0]
         dx, dy = green_res[0]
-        # 출발지 -> 복도 -> 복도 직진 -> 목적지
         draw.line([(sx, sy), (sx, corridor_y), (dx, corridor_y), (dx, dy)], fill=(0, 102, 102), width=lw)
         draw.ellipse([sx-r_rad, sy-r_rad, sx+r_rad, sy+r_rad], fill=(217, 48, 37), outline=(255, 255, 255), width=2)
         draw.ellipse([dx-r_rad, dy-r_rad, dx+r_rad, dy+r_rad], fill=(30, 142, 62), outline=(255, 255, 255), width=2)
@@ -438,7 +514,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
     elif mode == "TO_ELEV" and red_res and elev_center:
         sx, sy = red_res[0]
         ex, ey = elev_center
-        # 출발지 -> 복도 -> 엘리베이터 (방 관통 차단)
         draw.line([(sx, sy), (sx, corridor_y), (ex, corridor_y), (ex, ey)], fill=(217, 48, 37), width=lw)
         draw.ellipse([sx-r_rad, sy-r_rad, sx+r_rad, sy+r_rad], fill=(217, 48, 37), outline=(255, 255, 255), width=2)
         draw.ellipse([ex-r_rad, ey-r_rad, ex+r_rad, ey+r_rad], fill=(255, 140, 0), outline=(255, 255, 255), width=2)
@@ -446,15 +521,267 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
     elif mode == "FROM_ELEV" and elev_center and green_res:
         ex, ey = elev_center
         dx, dy = green_res[0]
-        # 엘리베이터 -> 복도로 내려옴 -> 복도 따라 직진 -> 목적지 입구 진입 (방 관통 차단)
         draw.line([(ex, ey), (ex, corridor_y), (dx, corridor_y), (dx, dy)], fill=(30, 142, 62), width=lw)
         draw.ellipse([ex-r_rad, ey-r_rad, ex+r_rad, ey+r_rad], fill=(255, 140, 0), outline=(255, 255, 255), width=2)
         draw.ellipse([dx-r_rad, dy-r_rad, dx+r_rad, dy+r_rad], fill=(30, 142, 62), outline=(255, 255, 255), width=2)
 
     return pil_img
 
+# ---------------------------------------------------------
+# 6. 양손가락 핀치 줌 & 드래그 인터랙티브 뷰어 컴포넌트
+# ---------------------------------------------------------
+def render_pinch_zoom_viewer(pil_img, step_title, viewer_height=490):
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    b64_img = base64.b64encode(buf.getvalue()).decode()
+    elem_id = f"viewer_{abs(hash(step_title)) % 100000}"
+
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }}
+        .badge-bar {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }}
+        .step-badge {{
+            background-color: #005C5C;
+            color: white;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            font-weight: 700;
+        }}
+        .tip-badge {{
+            font-size: 0.78rem;
+            color: #555555;
+            background: #EEEEEE;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 600;
+        }}
+        .viewer-box {{
+            position: relative;
+            width: 100%;
+            height: {viewer_height}px;
+            background: #FFFFFF;
+            border: 2px solid #005C5C;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+        }}
+        .map-layer {{
+            position: absolute;
+            transform-origin: 0 0;
+            cursor: grab;
+            user-select: none;
+            will-change: transform;
+        }}
+        .map-layer:active {{
+            cursor: grabbing;
+        }}
+        .map-layer img {{
+            display: block;
+            max-width: none;
+            height: {viewer_height - 30}px;
+            pointer-events: none;
+        }}
+        .floating-ctrls {{
+            position: absolute;
+            right: 14px;
+            bottom: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 10;
+        }}
+        .btn-ctrl {{
+            width: 40px;
+            height: 40px;
+            background: #005C5C;
+            color: #FFFFFF;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.25rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+            cursor: pointer;
+            touch-action: manipulation;
+        }}
+        .btn-ctrl:active {{
+            background: #003A3A;
+            transform: scale(0.95);
+        }}
+    </style>
+    </head>
+    <body>
+    <div class="badge-bar">
+        <span class="step-badge">{step_title}</span>
+        <span class="tip-badge">🖐️ 두 손가락 핀치 줌 / 드래그 이동</span>
+    </div>
+    <div class="viewer-box" id="{elem_id}_box">
+        <div class="map-layer" id="{elem_id}_layer">
+            <img id="{elem_id}_img" src="data:image/png;base64,{b64_img}" />
+        </div>
+        <div class="floating-ctrls">
+            <button class="btn-ctrl" onclick="{elem_id}_zoomIn()">＋</button>
+            <button class="btn-ctrl" onclick="{elem_id}_zoomOut()">－</button>
+            <button class="btn-ctrl" onclick="{elem_id}_reset()" style="font-size:1.0rem;">⟲</button>
+        </div>
+    </div>
+
+    <script>
+        const cBox = document.getElementById('{elem_id}_box');
+        const cLayer = document.getElementById('{elem_id}_layer');
+        const cImg = document.getElementById('{elem_id}_img');
+
+        let scale = 1;
+        let posX = 0;
+        let posY = 0;
+        let isDrag = false;
+        let startX = 0, startY = 0;
+        let initDist = 0, initScale = 1;
+
+        function updateStyle() {{
+            cLayer.style.transform = `translate(${{posX}}px, ${{posY}}px) scale(${{scale}})`;
+        }}
+
+        function initFit() {{
+            const cw = cBox.clientWidth;
+            const ch = cBox.clientHeight;
+            const iw = cImg.naturalWidth || cImg.width || 1200;
+            const ih = cImg.naturalHeight || cImg.height || 550;
+            scale = Math.min((cw - 16) / iw, (ch - 16) / ih);
+            if (!scale || scale <= 0) scale = 0.55;
+            posX = (cw - (iw * scale)) / 2;
+            posY = (ch - (ih * scale)) / 2;
+            updateStyle();
+        }}
+
+        cImg.onload = initFit;
+        setTimeout(initFit, 120);
+
+        cBox.addEventListener('mousedown', (e) => {{
+            if (e.target.tagName === 'BUTTON') return;
+            isDrag = true;
+            startX = e.clientX - posX;
+            startY = e.clientY - posY;
+        }});
+        window.addEventListener('mousemove', (e) => {{
+            if (!isDrag) return;
+            posX = e.clientX - startX;
+            posY = e.clientY - startY;
+            updateStyle();
+        }});
+        window.addEventListener('mouseup', () => {{ isDrag = false; }});
+
+        cBox.addEventListener('wheel', (e) => {{
+            e.preventDefault();
+            const factor = 1.15;
+            const rect = cBox.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            let nextScale = e.deltaY < 0 ? scale * factor : scale / factor;
+            nextScale = Math.min(Math.max(0.2, nextScale), 5.0);
+            posX = mx - (mx - posX) * (nextScale / scale);
+            posY = my - (my - posY) * (nextScale / scale);
+            scale = nextScale;
+            updateStyle();
+        }}, {{ passive: false }});
+
+        cBox.addEventListener('touchstart', (e) => {{
+            if (e.target.tagName === 'BUTTON') return;
+            if (e.touches.length === 1) {{
+                isDrag = true;
+                startX = e.touches[0].clientX - posX;
+                startY = e.touches[0].clientY - posY;
+            }} else if (e.touches.length === 2) {{
+                isDrag = false;
+                initDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                initScale = scale;
+            }}
+        }}, {{ passive: false }});
+
+        cBox.addEventListener('touchmove', (e) => {{
+            if (e.target.tagName === 'BUTTON') return;
+            e.preventDefault();
+            if (e.touches.length === 1 && isDrag) {{
+                posX = e.touches[0].clientX - startX;
+                posY = e.touches[0].clientY - startY;
+                updateStyle();
+            }} else if (e.touches.length === 2 && initDist > 0) {{
+                const curDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                let nextScale = initScale * (curDist / initDist);
+                nextScale = Math.min(Math.max(0.2, nextScale), 5.0);
+
+                const rect = cBox.getBoundingClientRect();
+                const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+                const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+
+                posX = midX - (midX - posX) * (nextScale / scale);
+                posY = midY - (midY - posY) * (nextScale / scale);
+                scale = nextScale;
+                updateStyle();
+            }}
+        }}, {{ passive: false }});
+
+        cBox.addEventListener('touchend', (e) => {{
+            if (e.touches.length < 2) initDist = 0;
+            if (e.touches.length === 0) isDrag = false;
+        }});
+
+        function {elem_id}_zoomIn() {{
+            const nextScale = Math.min(scale * 1.3, 5.0);
+            const cx = cBox.clientWidth / 2, cy = cBox.clientHeight / 2;
+            posX = cx - (cx - posX) * (nextScale / scale);
+            posY = cy - (cy - posY) * (nextScale / scale);
+            scale = nextScale;
+            updateStyle();
+        }}
+        function {elem_id}_zoomOut() {{
+            const nextScale = Math.max(scale / 1.3, 0.2);
+            const cx = cBox.clientWidth / 2, cy = cBox.clientHeight / 2;
+            posX = cx - (cx - posX) * (nextScale / scale);
+            posY = cy - (cy - posY) * (nextScale / scale);
+            scale = nextScale;
+            updateStyle();
+        }}
+        function {elem_id}_reset() {{
+            initFit();
+        }}
+    </script>
+    </body>
+    </html>
+    """
+    components.html(html_code, height=viewer_height + 40, scrolling=False)
+
 # =========================================================
-# PAGE 1: 나의 검사 일정 & 내 위치 선택 화면 (모바일 뷰)
+# PAGE 1: 나의 검사 일정 & 내 위치 & 검사 외 장소 선택 화면
 # =========================================================
 if st.session_state.page == "home":
     st.markdown("""
@@ -464,10 +791,10 @@ if st.session_state.page == "home":
     </div>
     """, unsafe_allow_html=True)
 
+    # 1) 나의 검사 일정
     st.markdown("#### 📅 나의 검사 일정")
     st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 눌러주세요.")
 
-    # 검사 일정 카드 및 개별 '길안내' 버튼
     for idx, ex in enumerate(PATIENT_EXAMS):
         with st.container():
             st.markdown(f"""
@@ -484,78 +811,139 @@ if st.session_state.page == "home":
 
             if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
                 st.session_state.selected_exam_idx = idx
+                st.session_state.nav_mode = "exam"
                 st.session_state.page = "map"
                 st.rerun()
 
     st.markdown("---")
 
-    # 3칸 분할 현재 내 위치 선택란 (1. 관 선택 / 2. 층 선택 / 3. 위치 선택)
+    # 2) 현재 내 위치 선택 (3칸 분할)
     st.markdown("#### 📍 현재 내 위치 선택")
     loc_col1, loc_col2, loc_col3 = st.columns([1.0, 0.9, 1.5])
 
+    bldg_options = ["서관", "동관", "신관"]
+    floor_options = ["1층", "2층"]
+
     with loc_col1:
-        bldg_list = ["서관", "동관", "신관"]
-        if st.session_state.sel_bldg not in bldg_list:
+        if st.session_state.sel_bldg not in bldg_options:
             st.session_state.sel_bldg = "동관"
         st.session_state.sel_bldg = st.selectbox(
             "관 선택",
-            options=bldg_list,
-            index=bldg_list.index(st.session_state.sel_bldg)
+            options=bldg_options,
+            index=bldg_options.index(st.session_state.sel_bldg),
+            key="sb_start_bldg"
         )
 
     with loc_col2:
-        floor_list = ["1층", "2층"]
-        if st.session_state.sel_floor not in floor_list:
+        if st.session_state.sel_floor not in floor_options:
             st.session_state.sel_floor = "2층"
         st.session_state.sel_floor = st.selectbox(
             "층 선택",
-            options=floor_list,
-            index=floor_list.index(st.session_state.sel_floor)
+            options=floor_options,
+            index=floor_options.index(st.session_state.sel_floor),
+            key="sb_start_floor"
         )
 
-    # 선택된 [관] + [층]의 검사실 자동 필터링
-    filtered_keys = [
+    filtered_start_keys = [
         k for k, v in MAP_ROOMS.items()
         if v["building"] == st.session_state.sel_bldg and v["floor"] == st.session_state.sel_floor
     ]
 
     with loc_col3:
-        default_idx = 0
-        if st.session_state.start_key in filtered_keys:
-            default_idx = filtered_keys.index(st.session_state.start_key)
+        def_start_idx = 0
+        if st.session_state.start_key in filtered_start_keys:
+            def_start_idx = filtered_start_keys.index(st.session_state.start_key)
         st.session_state.start_key = st.selectbox(
             "위치 선택",
-            options=filtered_keys,
+            options=filtered_start_keys,
             format_func=lambda k: MAP_ROOMS[k]["short_name"],
-            index=default_idx
+            index=def_start_idx,
+            key="sb_start_room"
         )
 
+    st.markdown("---")
+
+    # 3) 검사 외 찾아갈 장소 선택 (요청 사항 반영)
+    st.markdown("#### 🧭 검사 외 찾아갈 장소 선택")
+    st.caption("※ 검사 일정 외 편의시설이나 다른 검사실을 찾으실 때만 선택해 주세요.")
+
+    dest_col1, dest_col2, dest_col3 = st.columns([1.0, 0.9, 1.5])
+
+    with dest_col1:
+        if st.session_state.sel_dest_bldg not in bldg_options:
+            st.session_state.sel_dest_bldg = "서관"
+        st.session_state.sel_dest_bldg = st.selectbox(
+            "관 선택",
+            options=bldg_options,
+            index=bldg_options.index(st.session_state.sel_dest_bldg),
+            key="sb_dest_bldg"
+        )
+
+    with dest_col2:
+        if st.session_state.sel_dest_floor not in floor_options:
+            st.session_state.sel_dest_floor = "1층"
+        st.session_state.sel_dest_floor = st.selectbox(
+            "층 선택",
+            options=floor_options,
+            index=floor_options.index(st.session_state.sel_dest_floor),
+            key="sb_dest_floor"
+        )
+
+    filtered_dest_keys = [
+        k for k, v in MAP_ROOMS.items()
+        if v["building"] == st.session_state.sel_dest_bldg and v["floor"] == st.session_state.sel_dest_floor
+    ]
+
+    with dest_col3:
+        def_dest_idx = 0
+        if st.session_state.custom_dest_key in filtered_dest_keys:
+            def_dest_idx = filtered_dest_keys.index(st.session_state.custom_dest_key)
+        st.session_state.custom_dest_key = st.selectbox(
+            "위치 선택",
+            options=filtered_dest_keys,
+            format_func=lambda k: MAP_ROOMS[k]["short_name"],
+            index=def_dest_idx,
+            key="sb_dest_room"
+        )
+
+    # 선택한 장소로 바로 길안내를 시작하는 전용 버튼
+    if st.button("🧭 이 장소로 길안내 시작", use_container_width=True, key="btn_go_custom"):
+        st.session_state.nav_mode = "custom"
+        st.session_state.page = "map"
+        st.rerun()
+
+    # 시간 테스트 옵션
     with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)"):
         t_c1, t_c2 = st.columns(2)
         st.session_state.day_type = t_c1.selectbox("요일", ["평일(월~금)", "토요일", "일요일/공휴일"], index=0)
         st.session_state.time_str = t_c2.select_slider("시각", ["09:00", "14:20", "17:45", "19:10"], value=st.session_state.time_str)
 
 # =========================================================
-# PAGE 2: 지도 전용 화면 (와이드 뷰)
+# PAGE 2: 지도 전용 화면 (핀치 줌 & 드래그 와이드 뷰)
 # =========================================================
 elif st.session_state.page == "map":
-    # 1. 최상단 뒤로가기 버튼
+    # 최상단 뒤로가기 버튼
     b_col1, b_col2 = st.columns([1.2, 2.8])
     with b_col1:
         if st.button("⬅️ 검사 목록 및 위치 변경으로 돌아가기", use_container_width=True):
             st.session_state.page = "home"
             st.rerun()
 
-    target_exam = PATIENT_EXAMS[st.session_state.selected_exam_idx]
     start_key = st.session_state.start_key
-    dest_key = resolve_dest_key(target_exam, start_key, st.session_state.day_type, st.session_state.time_str)
+
+    # 길안내 목적지 결정 (일정 검사 또는 직접 선택한 장소)
+    if st.session_state.nav_mode == "custom":
+        dest_key = st.session_state.custom_dest_key
+    else:
+        target_exam = PATIENT_EXAMS[st.session_state.selected_exam_idx]
+        dest_key = resolve_dest_key(target_exam, start_key, st.session_state.day_type, st.session_state.time_str)
 
     s_meta = MAP_ROOMS[start_key]
     d_meta = MAP_ROOMS[dest_key]
     is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
     elev_info = ELEVATORS[s_meta["building"]]
 
-    # 2. 목적지 요약 배너
+    # 상단 목적지 요약 배너
     st.markdown(f"""
     <div class="dest-banner">
         <div style="font-size:0.86rem; font-weight:700;">🟢 실시간 맞춤 길안내 목적지</div>
@@ -567,13 +955,12 @@ elif st.session_state.page == "map":
     </div>
     """, unsafe_allow_html=True)
 
-    # 범례
     leg_c1, leg_c2, leg_c3 = st.columns(3)
     leg_c1.markdown("🔴 **연한 빨간색**: 내 출발 위치")
     leg_c2.markdown("🟢 **연한 녹색**: 가야 할 목적지")
     leg_c3.markdown("🟠 **주황색 사각 박스**: 탑승/하차 엘리베이터")
 
-    # 3. 도면 렌더링
+    # 도면 렌더링
     path_2f = find_image("2F")
     path_1f = find_image("1F")
 
@@ -584,31 +971,28 @@ elif st.session_state.page == "map":
         arr_1f = clean_base_map(path_1f, "1F")
 
         if is_diff_floor:
-            # [1단계 지도] 출발 층 -> 엘리베이터
-            st.markdown(f"<div class='map-step-badge'>1단계 지도 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
+            # 1단계 지도 (출발 층 -> 엘리베이터)
             base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
             img_s1 = draw_colored_map(
                 base_start, red_key=start_key, elev_box=elev_start_box, mode="TO_ELEV", floor_code=s_meta["floor_code"]
             )
-            st.image(img_s1, use_container_width=True)
+            render_pinch_zoom_viewer(img_s1, f"1단계 : {s_meta['floor']} [{elev_info['name']}]로 이동")
 
-            # [2단계 지도] 도착 층 엘리베이터 -> 목적지 검사실 (방 관통 없이 복도 경유!)
-            st.markdown(f"<div class='map-step-badge'>2단계 지도 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착</div>", unsafe_allow_html=True)
+            # 2단계 지도 (엘리베이터 하차 -> 목적지)
             base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
             elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
             img_s2 = draw_colored_map(
                 base_dest, green_key=dest_key, elev_box=elev_dest_box, mode="FROM_ELEV", floor_code=d_meta["floor_code"]
             )
-            st.image(img_s2, use_container_width=True)
+            render_pinch_zoom_viewer(img_s2, f"2단계 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착")
         else:
-            # 동일 층 지도 1장
-            st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)</div>", unsafe_allow_html=True)
+            # 동일 층 지도
             base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             img_same = draw_colored_map(
                 base_same, red_key=start_key, green_key=dest_key, mode="SAME", floor_code=s_meta["floor_code"]
             )
-            st.image(img_same, use_container_width=True)
+            render_pinch_zoom_viewer(img_same, f"{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)")
 
     # 하단 챗봇
     st.markdown("---")
