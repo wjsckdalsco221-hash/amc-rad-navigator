@@ -17,17 +17,19 @@ st.set_page_config(
 if "page" not in st.session_state:
     st.session_state.page = "home"
 if "nav_mode" not in st.session_state:
-    st.session_state.nav_mode = "exam"  # 'exam' 또는 'custom'
+    st.session_state.nav_mode = "exam"
 if "selected_exam_idx" not in st.session_state:
     st.session_state.selected_exam_idx = 0
 
-# 출발 위치 세션
+# 내 출발 위치 세션 (첫 시작 시 공란 세팅)
 if "sel_bldg" not in st.session_state:
-    st.session_state.sel_bldg = "동관"
+    st.session_state.sel_bldg = None
 if "sel_floor" not in st.session_state:
-    st.session_state.sel_floor = "2층"
+    st.session_state.sel_floor = None
 if "start_key" not in st.session_state:
-    st.session_state.start_key = "2F_EAST_XRAY"
+    st.session_state.start_key = None
+if "loc_error" not in st.session_state:
+    st.session_state.loc_error = False
 
 # 검사 외 찾아갈 장소 세션
 if "sel_dest_bldg" not in st.session_state:
@@ -37,7 +39,7 @@ if "sel_dest_floor" not in st.session_state:
 if "custom_dest_key" not in st.session_state:
     st.session_state.custom_dest_key = "2F_NEW_EYE"
 
-# 시간 설정 세션 (기본값: 평일 14:00)
+# 시간 설정 세션
 if "day_type" not in st.session_state:
     st.session_state.day_type = "평일(월~금)"
 if "time_str" not in st.session_state:
@@ -156,6 +158,20 @@ div.stButton > button:hover {{
     margin-top: 14px;
     margin-bottom: 8px;
     display: inline-block;
+}}
+/* 위치 미선택 알림 배너 스타일 */
+.loc-alert-card {{
+    background: #FFF8E1;
+    border: 2px solid #FFA000;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 4px 12px rgba(255, 160, 0, 0.2);
+    animation: fadeIn 0.3s ease-in-out;
+}}
+@keyframes fadeIn {{
+    from {{ opacity: 0; transform: translateY(-6px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -439,34 +455,29 @@ PATIENT_EXAMS = [
 ]
 
 # ---------------------------------------------------------
-# 4. 시간·상황 매칭 규칙 엔진 (X-ray & 채혈 각 2대 케이스 분기)
+# 4. 시간·상황 매칭 규칙 엔진 (출발지 미지정 시에도 안전 방어)
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
     t_val = int(time_str.replace(":", ""))
+    start_bldg = MAP_ROOMS[start_key]["building"] if (start_key and start_key in MAP_ROOMS) else "동관"
 
-    # 1) 일반촬영(X-ray) 2대 케이스:
     if cat == "XRAY":
-        # 케이스 1: 평일 주간 (08:00 ~ 17:30) ➔ 동관 1층 영상의학과 외래촬영실
         if day_type == "평일(월~금)" and 800 <= t_val <= 1730:
             return "1F_EAST_XRAY"
-        # 케이스 2: 그 외 야간/당직/주말 ➔ 동관 2층 일반촬영실
         else:
             return "2F_EAST_XRAY"
 
-    # 2) 외래 채혈(BLOOD) 2대 케이스:
     elif cat == "BLOOD":
-        # 케이스 1: 주간 운영 (06:10 ~ 18:30) ➔ 서관 1층 채혈실
         if 610 <= t_val <= 1830:
             return "1F_WEST_BLOOD"
-        # 케이스 2: 야간/당직 운영 (18:30 ~ 익일 06:10) ➔ 서관 2층 CT/MR 채혈실 (진단검사의학과)
         else:
             return "2F_WEST_DIAG"
 
     return exam["default_key"]
 
 # ---------------------------------------------------------
-# 5. 도면 가공 (방 관통 방지 복도 동선 적용)
+# 5. 도면 가공 함수
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -539,8 +550,8 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
             arr[y1:y2, x1:x2] = sub
         return (int(np.mean([c[0] for c in centers])), int(np.mean([c[1] for c in centers]))), boxes
 
-    red_res = fill_box(red_key, [255, 200, 200])     # 내 위치: 연빨강
-    green_res = fill_box(green_key, [188, 245, 200]) # 목적지: 연녹색
+    red_res = fill_box(red_key, [255, 200, 200])
+    green_res = fill_box(green_key, [188, 245, 200])
 
     pil_img = Image.fromarray(arr)
     draw = ImageDraw.Draw(pil_img)
@@ -562,7 +573,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
 
     lw = max(4, int(W * 0.003))
     r_rad = max(9, int(W * 0.0075))
-
     corridor_y = int(H * 0.672) if floor_code == "1F" else int(H * 0.665)
 
     if mode == "SAME" and red_res and green_res and red_key != green_key:
@@ -607,7 +617,6 @@ if st.session_state.page == "home":
         assigned_key = resolve_dest_key(ex, st.session_state.start_key, st.session_state.day_type, st.session_state.time_str)
         assigned_meta = MAP_ROOMS[assigned_key]
 
-        # 시간대별 동적 분기 검사(X-ray 및 채혈)에 실시간 배정 라벨 부착
         if ex["cat"] in ["XRAY", "BLOOD"]:
             sub_display = f"{assigned_meta['name']} ({assigned_meta['building']} {assigned_meta['floor']}) <span style='color:#005C5C; font-weight:700;'>[{st.session_state.time_str} 배정]</span>"
         else:
@@ -626,57 +635,102 @@ if st.session_state.page == "home":
             </div>
             """, unsafe_allow_html=True)
 
+            # 길안내 클릭 시: 내 위치 미선택 상태면 경고 띄우고 위치 선택란으로 유도!
             if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
-                st.session_state.selected_exam_idx = idx
-                st.session_state.nav_mode = "exam"
-                st.session_state.page = "map"
-                st.rerun()
+                if not st.session_state.start_key:
+                    st.session_state.loc_error = True
+                    st.rerun()
+                else:
+                    st.session_state.loc_error = False
+                    st.session_state.selected_exam_idx = idx
+                    st.session_state.nav_mode = "exam"
+                    st.session_state.page = "map"
+                    st.rerun()
 
     st.markdown("---")
 
-    # 2) 현재 내 위치 선택
+    # 2) 현재 내 위치 선택란 (미선택 시 경고 배너 및 자동 스크롤)
+    st.markdown('<div id="loc_section_anchor"></div>', unsafe_allow_html=True)
+
+    # 위치를 선택하지 않고 길안내를 눌렀을 때 표시되는 강조 배너
+    if st.session_state.loc_error and not st.session_state.start_key:
+        st.markdown("""
+        <div class="loc-alert-card">
+            <div style="font-weight:800; font-size:1.02rem; color:#B71C1C; display:flex; align-items:center; gap:6px;">
+                📍 현재 계신 내 위치를 먼저 선택해 주세요!
+            </div>
+            <div style="font-size:0.87rem; color:#4E342E; margin-top:5px; line-height:1.45;">
+                정확한 길안내를 위해 아래에서 <b>[관 선택] ➔ [층 선택] ➔ [위치 선택]</b>을 완료하신 후 길안내를 눌러주세요.
+            </div>
+        </div>
+        <script>
+            var target = window.parent.document.getElementById('loc_section_anchor') || document.getElementById('loc_section_anchor');
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        </script>
+        """, unsafe_allow_html=True)
+        st.toast("📍 현재 내 위치를 먼저 선택해 주세요!", icon="⚠️")
+
     st.markdown("#### 📍 현재 내 위치 선택")
+
     bldg_options = ["서관", "동관", "신관"]
     floor_options = ["1층", "2층"]
 
     loc_col1, loc_col2, loc_col3 = st.columns([1.0, 0.9, 1.5])
 
     with loc_col1:
-        if st.session_state.sel_bldg not in bldg_options:
-            st.session_state.sel_bldg = "동관"
-        st.session_state.sel_bldg = st.selectbox(
+        sel_bldg_idx = bldg_options.index(st.session_state.sel_bldg) if st.session_state.sel_bldg in bldg_options else None
+        new_bldg = st.selectbox(
             "관 선택",
             options=bldg_options,
-            index=bldg_options.index(st.session_state.sel_bldg),
+            index=sel_bldg_idx,
+            placeholder="관 선택",
             key="sb_start_bldg"
         )
+        if new_bldg != st.session_state.sel_bldg:
+            st.session_state.sel_bldg = new_bldg
+            st.session_state.start_key = None
+            st.rerun()
 
     with loc_col2:
-        if st.session_state.sel_floor not in floor_options:
-            st.session_state.sel_floor = "2층"
-        st.session_state.sel_floor = st.selectbox(
+        sel_floor_idx = floor_options.index(st.session_state.sel_floor) if st.session_state.sel_floor in floor_options else None
+        new_floor = st.selectbox(
             "층 선택",
             options=floor_options,
-            index=floor_options.index(st.session_state.sel_floor),
+            index=sel_floor_idx,
+            placeholder="층 선택",
             key="sb_start_floor"
         )
+        if new_floor != st.session_state.sel_floor:
+            st.session_state.sel_floor = new_floor
+            st.session_state.start_key = None
+            st.rerun()
 
-    filtered_start_keys = [
-        k for k, v in MAP_ROOMS.items()
-        if v["building"] == st.session_state.sel_bldg and v["floor"] == st.session_state.sel_floor
-    ]
+    # 관과 층이 모두 선택되었을 때만 세부 검사실 목록 필터링
+    if st.session_state.sel_bldg and st.session_state.sel_floor:
+        filtered_start_keys = [
+            k for k, v in MAP_ROOMS.items()
+            if v["building"] == st.session_state.sel_bldg and v["floor"] == st.session_state.sel_floor
+        ]
+    else:
+        filtered_start_keys = []
 
     with loc_col3:
-        def_start_idx = 0
-        if st.session_state.start_key in filtered_start_keys:
-            def_start_idx = filtered_start_keys.index(st.session_state.start_key)
-        st.session_state.start_key = st.selectbox(
+        def_start_idx = filtered_start_keys.index(st.session_state.start_key) if st.session_state.start_key in filtered_start_keys else None
+        new_room = st.selectbox(
             "위치 선택",
             options=filtered_start_keys,
             format_func=lambda k: MAP_ROOMS[k]["short_name"],
             index=def_start_idx,
+            placeholder="위치 선택" if filtered_start_keys else "관·층 먼저 선택",
             key="sb_start_room"
         )
+        if new_room != st.session_state.start_key:
+            st.session_state.start_key = new_room
+            if new_room:
+                st.session_state.loc_error = False
+            st.rerun()
 
     st.markdown("---")
 
@@ -724,15 +778,19 @@ if st.session_state.page == "home":
         )
 
     if st.button("🧭 이 장소로 길안내 시작", use_container_width=True, key="btn_go_custom"):
-        st.session_state.nav_mode = "custom"
-        st.session_state.page = "map"
-        st.rerun()
+        if not st.session_state.start_key:
+            st.session_state.loc_error = True
+            st.rerun()
+        else:
+            st.session_state.loc_error = False
+            st.session_state.nav_mode = "custom"
+            st.session_state.page = "map"
+            st.rerun()
 
-    # 4) 현재 요일 및 시간 설정 (X-ray & 채혈 2대 케이스 원클릭 비교 버튼 탑재)
+    # 4) 현재 요일 및 시간 설정 (원클릭 비교 버튼)
     with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)", expanded=False):
         st.caption("👉 버튼을 누르면 각 검사의 주간/야간 검사실 배정 결과를 원클릭으로 비교할 수 있습니다.")
         
-        # [비교 세트 1] 일반촬영 (X-ray) 비교
         st.markdown("**📸 일반촬영 (X-ray) 주/야간 원클릭 비교**")
         x_c1, x_c2 = st.columns(2)
         if x_c1.button("🕒 평일 15:00 (주간 ➔ 동관 1층)", use_container_width=True, key="btn_xray_day"):
@@ -746,7 +804,6 @@ if st.session_state.page == "home":
             st.session_state.selected_exam_idx = 0
             st.rerun()
 
-        # [비교 세트 2] 외래 채혈 (검체검사) 비교
         st.markdown("**🩸 외래 채혈실 주/야간 원클릭 비교**")
         b_c1, b_c2 = st.columns(2)
         if b_c1.button("☀️ 평일 14:00 (주간 ➔ 서관 1층 채혈실)", use_container_width=True, key="btn_blood_day"):
@@ -788,7 +845,7 @@ elif st.session_state.page == "map":
             st.session_state.page = "home"
             st.rerun()
 
-    start_key = st.session_state.start_key
+    start_key = st.session_state.start_key if st.session_state.start_key else "2F_EAST_XRAY"
 
     if st.session_state.nav_mode == "custom":
         dest_key = st.session_state.custom_dest_key
@@ -819,7 +876,6 @@ elif st.session_state.page == "map":
     else:
         reason_txt = f"직접 선택하신 목적지로 이동 안내합니다."
 
-    # 목적지 요약 배너
     st.markdown(f"""
     <div class="dest-banner">
         <div style="font-size:0.86rem; font-weight:700;">🟢 실시간 맞춤 길안내 목적지 ({st.session_state.day_type} {st.session_state.time_str} 기준 자동 매칭)</div>
@@ -837,7 +893,6 @@ elif st.session_state.page == "map":
     leg_c2.markdown("🟢 **연한 녹색**: 가야 할 목적지")
     leg_c3.markdown("🟠 **주황색 사각 박스**: 탑승/하차 엘리베이터")
 
-    # 지도 렌더링
     path_2f = find_image("2F")
     path_1f = find_image("1F")
 
@@ -848,7 +903,6 @@ elif st.session_state.page == "map":
         arr_1f = clean_base_map(path_1f, "1F")
 
         if is_diff_floor:
-            # [1단계 지도] 출발 층 -> 엘리베이터
             st.markdown(f"<div class='map-step-badge'>1단계 지도 : {s_meta['floor']} [{elev_info['name']}]로 이동</div>", unsafe_allow_html=True)
             base_start = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             elev_start_box = elev_info[f"{s_meta['floor_code']}_box"]
@@ -857,7 +911,6 @@ elif st.session_state.page == "map":
             )
             st.image(img_s1, use_container_width=True)
 
-            # [2단계 지도] 도착 층 엘리베이터 -> 목적지
             st.markdown(f"<div class='map-step-badge'>2단계 지도 : {d_meta['floor']} 하차 ➔ [{d_meta['short_name']}](연한 녹색) 도착</div>", unsafe_allow_html=True)
             base_dest = arr_2f if d_meta["floor_code"] == "2F" else arr_1f
             elev_dest_box = elev_info[f"{d_meta['floor_code']}_box"]
@@ -866,7 +919,6 @@ elif st.session_state.page == "map":
             )
             st.image(img_s2, use_container_width=True)
         else:
-            # 동일 층 지도 1장
             st.markdown(f"<div class='map-step-badge'>{s_meta['floor']} 동선 지도 : [{s_meta['short_name']}](빨강) ➔ [{d_meta['short_name']}](녹색)</div>", unsafe_allow_html=True)
             base_same = arr_2f if s_meta["floor_code"] == "2F" else arr_1f
             img_same = draw_colored_map(
@@ -874,7 +926,6 @@ elif st.session_state.page == "map":
             )
             st.image(img_same, use_container_width=True)
 
-    # 하단 AI 챗봇
     st.markdown("---")
     with st.expander("💬 길 안내 AI에게 질문하기"):
         q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 채혈실 어디로 가나요?")
