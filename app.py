@@ -500,7 +500,7 @@ def run_ai_agent(user_query, day_type, time_str):
     try:
         # 순수 LLM 호출 (JSON 구조화 출력 강제)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=user_query,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
