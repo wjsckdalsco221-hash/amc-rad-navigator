@@ -7,16 +7,18 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. API 키 및 LLM 클라이언트 설정 (실제 Key 직접 바인딩)
+# 1. Streamlit Secrets 기반 API 키 로드 및 LLM 클라이언트 설정
 # ---------------------------------------------------------
-# [API 키 적용 위치] 
+# 코드에 키를 직접 적지 않고, Streamlit Cloud에 등록된 Secrets 값을 안전하게 호출합니다.
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-# Fallback 없이 순수 LLM 호출을 전담하는 Client 객체 생성
-client = genai.Client(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    client = genai.Client(api_key=GEMINI_API_KEY)
+else:
+    client = None
 
 # ---------------------------------------------------------
-# 2. 기본 레이아웃 및 세션 상태 초기화
+# 2. 기본 레이아웃 및 세션 상태 초기화 (모든 선택값 기본 공란 None 세팅)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="서울아산병원 AI 검사실 길 안내 에이전트",
@@ -32,7 +34,7 @@ if "nav_mode" not in st.session_state:
 if "selected_exam_idx" not in st.session_state:
     st.session_state.selected_exam_idx = 0
 
-# 내 출발 위치 세션
+# [1] 내 출발 위치 세션: 초기 실행 시 무조건 공란(None)
 if "sel_bldg" not in st.session_state:
     st.session_state.sel_bldg = None
 if "sel_floor" not in st.session_state:
@@ -42,13 +44,15 @@ if "start_key" not in st.session_state:
 if "loc_error" not in st.session_state:
     st.session_state.loc_error = False
 
-# 검사 외 찾아갈 장소 세션
+# [2] 검사 외 찾아갈 장소 세션: 초기 실행 시 무조건 공란(None)
 if "sel_dest_bldg" not in st.session_state:
-    st.session_state.sel_dest_bldg = "신관"
+    st.session_state.sel_dest_bldg = None
 if "sel_dest_floor" not in st.session_state:
-    st.session_state.sel_dest_floor = "2층"
+    st.session_state.sel_dest_floor = None
 if "custom_dest_key" not in st.session_state:
-    st.session_state.custom_dest_key = "2F_NEW_EYE"
+    st.session_state.custom_dest_key = None
+if "custom_dest_error" not in st.session_state:
+    st.session_state.custom_dest_error = False
 
 # 시간 설정 세션
 if "day_type" not in st.session_state:
@@ -439,20 +443,15 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     return exam["default_key"]
 
 def determine_next_step(completed_exam_tag, day_type, time_str, is_fasting=False):
-    """
-    LLM 추론 결과에 의해 직접 호출되는 파이썬 Action Tool
-    완료된 검사명과 금식 여부를 기반으로 출발지 및 최적 목적지를 확정합니다.
-    """
     if completed_exam_tag == "XRAY":
         start_key = "1F_EAST_XRAY" if (day_type == "평일(월~금)" and 800 <= int(time_str.replace(":", "")) <= 1730) else "2F_EAST_XRAY"
-        # X-ray 완료 후: 금식 상태라면 검체 정확도와 공복 유지를 풀기 위해 채혈(인덱스 1) 최우선 배정
         next_idx = 1
     elif completed_exam_tag == "BLOOD":
         start_key = "1F_WEST_BLOOD"
-        next_idx = 2  # 채혈 완료 후 복부 조영 CT
+        next_idx = 2
     elif completed_exam_tag == "CT":
         start_key = "2F_WEST_CT"
-        next_idx = 3  # CT 완료 후 뇌 MRI
+        next_idx = 3
     elif completed_exam_tag == "MR":
         start_key = "2F_NEW_MR"
         next_idx = 0
@@ -471,13 +470,13 @@ def determine_next_step(completed_exam_tag, day_type, time_str, is_fasting=False
     }
 
 # ---------------------------------------------------------
-# 6. 순수 Gemini LLM Agent 엔진 (Fallback 로직 완전 제거)
+# 6. 순수 Gemini LLM Agent 엔진 (gemini-3.8-flash 적용)
 # ---------------------------------------------------------
 def run_ai_agent(user_query, day_type, time_str):
-    """
-    제공된 실제 API 키를 기반으로 순수 Gemini LLM을 구동합니다.
-    환자의 비정형 자연어에서 선행 검사 완료와 임상 상태를 정밀 추출합니다.
-    """
+    if not client:
+        st.error("⚠️ Streamlit Cloud의 Settings ➔ Secrets에 GEMINI_API_KEY가 등록되지 않았습니다.")
+        return "API 키 설정을 확인해 주세요.", False
+
     system_prompt = f"""
     당신은 서울아산병원 외래 환자 길 안내 전문 AI 에이전트입니다.
     현재 원내 시각은 [{day_type} {time_str}]입니다.
@@ -496,9 +495,8 @@ def run_ai_agent(user_query, day_type, time_str):
         "reply": "string"
     }}
     """
-
     try:
-        # 순수 LLM 호출 (JSON 구조화 출력 강제)
+        # 모델명: 최신 권장 모델인 gemini-3.8-flash 적용
         response = client.models.generate_content(
             model="gemini-3.8-flash",
             contents=user_query,
@@ -513,10 +511,8 @@ def run_ai_agent(user_query, day_type, time_str):
         comp_exam = parsed.get("completed_exam", "XRAY")
         is_fast = parsed.get("is_fasting", False)
 
-        # 2단계: LLM 판단 결과를 입력으로 Action Tool 실행
         tool_res = determine_next_step(comp_exam, day_type, time_str, is_fast)
 
-        # 3단계: 화면 및 지도 동기화를 위한 Streamlit 세션 갱신
         st.session_state.start_key = tool_res["start_key"]
         s_meta = MAP_ROOMS[tool_res["start_key"]]
         st.session_state.sel_bldg = s_meta["building"]
@@ -527,7 +523,6 @@ def run_ai_agent(user_query, day_type, time_str):
 
         guide_msg = parsed.get("reply", f"다음 순서인 {tool_res['dest_name']}(으)로 이동하시면 됩니다.")
         st.session_state.ai_reasoning_msg = f"🤖 **AI Agent Reasoning**: {parsed.get('thought', '선행 검사 완료 인지')} ➔ **{tool_res['dest_name']}** 최적 경로 배정"
-        
         return guide_msg, True
 
     except Exception as e:
@@ -663,7 +658,7 @@ if st.session_state.page == "home":
     st.markdown("""
     <div class="app-header">
         <h3>🏥 서울아산병원 AI 검사실 길 안내 에이전트</h3>
-        <p>자연어로 질문하시면 AI Agent가 상황을 분석해 최적 동선 도면을 안내합니다.</p>
+        <p>자연어로 질문하시거나 아래에서 위치를 지정하시면 최적 동선 도면을 안내합니다.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -720,6 +715,7 @@ if st.session_state.page == "home":
             """, unsafe_allow_html=True)
 
             if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
+                # 내 출발 위치가 선택되지 않은 경우 지도로 넘어가지 않고 경고
                 if not st.session_state.start_key:
                     st.session_state.loc_error = True
                     st.rerun()
@@ -733,7 +729,7 @@ if st.session_state.page == "home":
 
     st.markdown("---")
 
-    # 3) 현재 내 위치 수동 선택란 (공란 시작 및 방어 로직)
+    # 3) 현재 내 위치 수동 선택란 (관/층/위치 모두 초기 공란 유지)
     st.markdown('<div id="loc_section_anchor"></div>', unsafe_allow_html=True)
 
     if st.session_state.loc_error and not st.session_state.start_key:
@@ -743,7 +739,7 @@ if st.session_state.page == "home":
                 📍 현재 계신 내 위치를 먼저 선택해 주세요!
             </div>
             <div style="font-size:0.86rem; color:#4E342E; margin-top:4px;">
-                정확한 길안내를 위해 아래에서 <b>[관] ➔ [층] ➔ [위치]</b>를 지정하시거나 상단 AI에게 질문해 주세요.
+                정확한 길안내를 위해 아래에서 <b>[관] ➔ [층] ➔ [위치]</b>를 모두 지정하신 후 길안내를 눌러주세요.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -757,7 +753,13 @@ if st.session_state.page == "home":
 
     with loc_col1:
         sel_bldg_idx = bldg_options.index(st.session_state.sel_bldg) if st.session_state.sel_bldg in bldg_options else None
-        new_bldg = st.selectbox("관 선택", options=bldg_options, index=sel_bldg_idx, placeholder="관 선택", key="sb_start_bldg")
+        new_bldg = st.selectbox(
+            "관 선택",
+            options=bldg_options,
+            index=sel_bldg_idx,
+            placeholder="관 선택",
+            key="sb_start_bldg"
+        )
         if new_bldg != st.session_state.sel_bldg:
             st.session_state.sel_bldg = new_bldg
             st.session_state.start_key = None
@@ -765,7 +767,13 @@ if st.session_state.page == "home":
 
     with loc_col2:
         sel_floor_idx = floor_options.index(st.session_state.sel_floor) if st.session_state.sel_floor in floor_options else None
-        new_floor = st.selectbox("층 선택", options=floor_options, index=sel_floor_idx, placeholder="층 선택", key="sb_start_floor")
+        new_floor = st.selectbox(
+            "층 선택",
+            options=floor_options,
+            index=sel_floor_idx,
+            placeholder="층 선택",
+            key="sb_start_floor"
+        )
         if new_floor != st.session_state.sel_floor:
             st.session_state.sel_floor = new_floor
             st.session_state.start_key = None
@@ -797,55 +805,86 @@ if st.session_state.page == "home":
 
     st.markdown("---")
 
-    # 4) 검사 외 찾아갈 장소 선택
+    # 4) 검사 외 찾아갈 장소 선택 (관/층/위치 모두 초기 공란 유지)
+    if st.session_state.custom_dest_error and not st.session_state.custom_dest_key:
+        st.markdown("""
+        <div class="loc-alert-card">
+            <div style="font-weight:800; font-size:1.02rem; color:#B71C1C;">
+                🎯 찾아가실 목적지(검사 외 장소)를 먼저 선택해 주세요!
+            </div>
+            <div style="font-size:0.86rem; color:#4E342E; margin-top:4px;">
+                아래에서 <b>[관] ➔ [층] ➔ [위치]</b>를 모두 선택하신 후 길안내 시작을 눌러주세요.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
     st.markdown("#### 🧭 검사 외 찾아갈 장소 선택")
     st.caption("※ 검사 일정 외 편의시설이나 다른 검사실을 찾으실 때만 선택해 주세요.")
 
     dest_col1, dest_col2, dest_col3 = st.columns([1.0, 0.9, 1.5])
 
     with dest_col1:
-        if st.session_state.sel_dest_bldg not in bldg_options:
-            st.session_state.sel_dest_bldg = "신관"
-        st.session_state.sel_dest_bldg = st.selectbox(
+        sel_dest_bldg_idx = bldg_options.index(st.session_state.sel_dest_bldg) if st.session_state.sel_dest_bldg in bldg_options else None
+        new_dest_bldg = st.selectbox(
             "관 선택",
             options=bldg_options,
-            index=bldg_options.index(st.session_state.sel_dest_bldg),
+            index=sel_dest_bldg_idx,
+            placeholder="관 선택",
             key="sb_dest_bldg"
         )
+        if new_dest_bldg != st.session_state.sel_dest_bldg:
+            st.session_state.sel_dest_bldg = new_dest_bldg
+            st.session_state.custom_dest_key = None
+            st.rerun()
 
     with dest_col2:
-        if st.session_state.sel_dest_floor not in floor_options:
-            st.session_state.sel_dest_floor = "2층"
-        st.session_state.sel_dest_floor = st.selectbox(
+        sel_dest_floor_idx = floor_options.index(st.session_state.sel_dest_floor) if st.session_state.sel_dest_floor in floor_options else None
+        new_dest_floor = st.selectbox(
             "층 선택",
             options=floor_options,
-            index=floor_options.index(st.session_state.sel_dest_floor),
+            index=sel_dest_floor_idx,
+            placeholder="층 선택",
             key="sb_dest_floor"
         )
+        if new_dest_floor != st.session_state.sel_dest_floor:
+            st.session_state.sel_dest_floor = new_dest_floor
+            st.session_state.custom_dest_key = None
+            st.rerun()
 
-    filtered_dest_keys = [
-        k for k, v in MAP_ROOMS.items()
-        if v["building"] == st.session_state.sel_dest_bldg and v["floor"] == st.session_state.sel_dest_floor
-    ]
+    if st.session_state.sel_dest_bldg and st.session_state.sel_dest_floor:
+        filtered_dest_keys = [
+            k for k, v in MAP_ROOMS.items()
+            if v["building"] == st.session_state.sel_dest_bldg and v["floor"] == st.session_state.sel_dest_floor
+        ]
+    else:
+        filtered_dest_keys = []
 
     with dest_col3:
-        def_dest_idx = 0
-        if st.session_state.custom_dest_key in filtered_dest_keys:
-            def_dest_idx = filtered_dest_keys.index(st.session_state.custom_dest_key)
-        st.session_state.custom_dest_key = st.selectbox(
+        def_dest_idx = filtered_dest_keys.index(st.session_state.custom_dest_key) if st.session_state.custom_dest_key in filtered_dest_keys else None
+        new_dest_room = st.selectbox(
             "위치 선택",
             options=filtered_dest_keys,
             format_func=lambda k: MAP_ROOMS[k]["short_name"],
             index=def_dest_idx,
+            placeholder="위치 선택" if filtered_dest_keys else "관·층 먼저 선택",
             key="sb_dest_room"
         )
+        if new_dest_room != st.session_state.custom_dest_key:
+            st.session_state.custom_dest_key = new_dest_room
+            if new_dest_room:
+                st.session_state.custom_dest_error = False
+            st.rerun()
 
     if st.button("🧭 이 장소로 길안내 시작", use_container_width=True, key="btn_go_custom"):
         if not st.session_state.start_key:
             st.session_state.loc_error = True
             st.rerun()
+        elif not st.session_state.custom_dest_key:
+            st.session_state.custom_dest_error = True
+            st.rerun()
         else:
             st.session_state.loc_error = False
+            st.session_state.custom_dest_error = False
             st.session_state.nav_mode = "custom"
             st.session_state.ai_reasoning_msg = f"수동 선택: 목적지 **{MAP_ROOMS[st.session_state.custom_dest_key]['name']}** 이동"
             st.session_state.page = "map"
