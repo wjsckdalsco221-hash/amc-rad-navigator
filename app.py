@@ -778,15 +778,9 @@ if st.session_state.page == "home":
         label_visibility="collapsed"
     )
     
-    col_ask1, col_ask2 = st.columns([2.0, 1.0])
-    with col_ask1:
-        btn_ask = st.button("🤖 AI에게 다음 길 물어보기", use_container_width=True)
-    with col_ask2:
-        btn_preset = st.button("💡 'X-ray 완료' 질의 입력", use_container_width=True)
-        if btn_preset:
-            agent_query = "x-ray 검사가 끝났는데, 다음은 어디로 가야해"
+    btn_ask = st.button("🤖 AI에게 다음 길 물어보기", use_container_width=True)
 
-    if (btn_ask or btn_preset) and agent_query:
+    if btn_ask and agent_query:
         with st.spinner("AI 에이전트(Gemini)가 최적 검사실 및 맞춤 경로를 추론 중입니다..."):
             reply_text, success = run_ai_agent(agent_query, st.session_state.day_type, st.session_state.time_str)
         if success:
