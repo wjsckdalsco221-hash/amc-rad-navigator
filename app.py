@@ -360,6 +360,12 @@ MAP_ROOMS = {
         "hours": "평일 08:30~17:30",
         "boxes": [(0.595, 0.730, 0.655, 0.970)]
     },
+    "2F_EAST_CONSULT": {
+        "name": "동관 2층 외래회송 상담실", "short_name": "외래회송 상담실",
+        "floor": "2층", "floor_code": "2F", "building": "동관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.455, 0.730, 0.548, 0.865)]
+    },
 
     # [신관 2층]
     "2F_NEW_MR": {
@@ -403,7 +409,7 @@ PATIENT_EXAMS = [
     },
     {
         "title": "[검사] 가정의학과 검체검사 (외래채혈)",
-        "sub": "주간(06:10~18:30) 서관 1층 / 야간(18:30~) 서관 2층",
+        "sub": "주간(06:10~18:30) 서관 1층 / 야간(18:30 이후) 서관 2층",
         "default_key": "1F_WEST_BLOOD",
         "cat": "BLOOD"
     },
@@ -428,16 +434,26 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
     t_val = int(time_str.replace(":", ""))
 
+    # 1) 일반촬영 (X-ray) 주/야간 분기
     if cat == "XRAY":
         if day_type == "평일(월~금)" and 800 <= t_val <= 1730:
             return "1F_EAST_XRAY"
         else:
             return "2F_EAST_XRAY"
 
+    # 2) 외래 채혈실 (BLOOD) 주/야간 분기 (오후 10시/22:00 포함)
     elif cat == "BLOOD":
-        if 610 <= t_val <= 1830:
-            return "1F_WEST_BLOOD"
-        else:
+        if day_type == "평일(월~금)":
+            if 610 <= t_val <= 1830:
+                return "1F_WEST_BLOOD"
+            else:
+                return "2F_WEST_DIAG"
+        elif day_type == "토요일":
+            if 630 <= t_val <= 1330:
+                return "1F_WEST_BLOOD"
+            else:
+                return "2F_WEST_DIAG"
+        else:  # 일요일/공휴일
             return "2F_WEST_DIAG"
 
     return exam["default_key"]
@@ -447,7 +463,8 @@ def determine_next_step(completed_exam_tag, day_type, time_str, is_fasting=False
         start_key = "1F_EAST_XRAY" if (day_type == "평일(월~금)" and 800 <= int(time_str.replace(":", "")) <= 1730) else "2F_EAST_XRAY"
         next_idx = 1
     elif completed_exam_tag == "BLOOD":
-        start_key = "1F_WEST_BLOOD"
+        t_val = int(time_str.replace(":", ""))
+        start_key = "1F_WEST_BLOOD" if (610 <= t_val <= 1830) else "2F_WEST_DIAG"
         next_idx = 2
     elif completed_exam_tag == "CT":
         start_key = "2F_WEST_CT"
@@ -477,7 +494,6 @@ def run_ai_agent(user_query, day_type, time_str):
         st.error("⚠️ Streamlit Cloud의 Secrets에 GEMINI_API_KEY가 등록되지 않았습니다.")
         return "API 키 설정을 확인해 주세요.", False
 
-    # 등록된 전체 검사실 및 편의시설 명칭 리스트 추출
     facility_list = [f"{v['name']} (키: {k})" for k, v in MAP_ROOMS.items()]
 
     system_prompt = f"""
@@ -524,32 +540,26 @@ def run_ai_agent(user_query, day_type, time_str):
         parsed = json.loads(response.text)
         intent = parsed.get("intent", "EXAM_NEXT")
 
-        # ---------------------------------------------------------
-        # 분기 1: 특정 시설/장소 위치 문의 (예: 외래회송팀 어디에 있어?)
-        # ---------------------------------------------------------
+        # 분기 1: 특정 시설/장소 위치 문의
         if intent == "FIND_FACILITY" and parsed.get("target_key"):
             target_key = parsed["target_key"]
             if target_key not in MAP_ROOMS:
                 target_key = "2F_EAST_CONSULT"
             target_meta = MAP_ROOMS[target_key]
 
-            # 상황 A: 환자가 현재 내 위치를 아직 선택하지 않은 경우
             if not st.session_state.start_key:
                 st.session_state.loc_error = True
-                # 목적지만 미리 세팅해둠
                 st.session_state.custom_dest_key = target_key
                 st.session_state.sel_dest_bldg = target_meta["building"]
                 st.session_state.sel_dest_floor = target_meta["floor"]
-                
+
                 reply_msg = (
                     f"💡 **{target_meta['name']}** 위치 안내:\n\n"
                     f"해당 시설은 **[{target_meta['building']} {target_meta['floor']}]**에 있습니다.\n\n"
                     f"🧭 상세 경로 지도를 확인하시려면 **아래에서 현재 계신 [내 위치]를 먼저 선택**해 주세요!"
                 )
                 st.session_state.ai_reasoning_msg = f"🤖 **AI 추론**: 환자가 {target_meta['short_name']} 위치를 문의함 (내 위치 선택 유도)"
-                return reply_msg, False  # 지도로 바로 넘어가지 않고 홈 화면에서 내 위치를 선택하도록 유도
-
-            # 상황 B: 내 위치가 이미 선택되어 있는 경우 -> 즉시 지도로 안내
+                return reply_msg, False
             else:
                 st.session_state.custom_dest_key = target_key
                 st.session_state.nav_mode = "custom"
@@ -557,16 +567,13 @@ def run_ai_agent(user_query, day_type, time_str):
                 guide_msg = parsed.get("reply", f"{target_meta['name']}(으)로 이동하는 최적 동선을 지도로 열어드립니다.")
                 return guide_msg, True
 
-        # ---------------------------------------------------------
         # 분기 2: 선행 검사 완료 후 다음 동선 문의
-        # ---------------------------------------------------------
         else:
             comp_exam = parsed.get("completed_exam", "XRAY") or "XRAY"
             is_fast = parsed.get("is_fasting", False)
 
             tool_res = determine_next_step(comp_exam, day_type, time_str, is_fast)
 
-            # 출발지가 비어있다면 검사 완료 위치를 출발지로 자동 설정
             if not st.session_state.start_key:
                 st.session_state.start_key = tool_res["start_key"]
                 s_meta = MAP_ROOMS[tool_res["start_key"]]
@@ -684,28 +691,20 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
     r_rad = max(9, int(W * 0.0075))
     corridor_y = int(H * 0.672) if floor_code == "1F" else int(H * 0.665)
 
-    # -------------------------------------------------------------
-    # 방 관통 방지: 검사실별 실제 보행자 복도 진입 경로 계산기
-    # -------------------------------------------------------------
     def get_corridor_access_path(key, center):
         cx, cy = center
-        # 신관 2층 MR실: 일반촬영실 방을 관통하지 않고 우측 수직 복도(신관 엘리베이터 앞)를 경유
         if key == "2F_NEW_MR":
             aisle_x = int(0.855 * W)
             return [(aisle_x, corridor_y), (aisle_x, cy), (cx, cy)]
-        # 신관 2층 치과: 우측 수직 복도를 타고 최상단 진입
         elif key == "2F_NEW_DENTAL":
             aisle_x = int(0.855 * W)
             return [(aisle_x, corridor_y), (aisle_x, cy), (cx, cy)]
-        # 동관 2층 MR실: 일반촬영실을 관통하지 않고 동관 엘리베이터 옆 수직 통로를 경유
         elif key == "2F_EAST_MR":
             aisle_x = int(0.445 * W)
             return [(aisle_x, corridor_y), (aisle_x, cy), (cx, cy)]
-        # 일반 검사실: 메인 가로 복도에서 곧장 해당 검사실 입구로 진입
         else:
             return [(cx, corridor_y), (cx, cy)]
 
-    # 1. 동일 층 이동 경로
     if mode == "SAME" and red_res and green_res and red_key != green_key:
         sx, sy = red_res[0]
         dx, dy = green_res[0]
@@ -725,7 +724,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
         draw.ellipse([sx-r_rad, sy-r_rad, sx+r_rad, sy+r_rad], fill=(217, 48, 37), outline=(255, 255, 255), width=2)
         draw.ellipse([dx-r_rad, dy-r_rad, dx+r_rad, dy+r_rad], fill=(30, 142, 62), outline=(255, 255, 255), width=2)
 
-    # 2. 내 위치 -> 엘리베이터 이동 경로
     elif mode == "TO_ELEV" and red_res and elev_center:
         sx, sy = red_res[0]
         ex, ey = elev_center
@@ -742,7 +740,6 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
         draw.ellipse([sx-r_rad, sy-r_rad, sx+r_rad, sy+r_rad], fill=(217, 48, 37), outline=(255, 255, 255), width=2)
         draw.ellipse([ex-r_rad, ey-r_rad, ex+r_rad, ey+r_rad], fill=(255, 140, 0), outline=(255, 255, 255), width=2)
 
-    # 3. 엘리베이터 하차 -> 목적지 이동 경로 (방 관통 방지 적용!)
     elif mode == "FROM_ELEV" and elev_center and green_res:
         ex, ey = elev_center
         dx, dy = green_res[0]
@@ -771,7 +768,7 @@ if st.session_state.page == "home":
     """, unsafe_allow_html=True)
 
     # 1) AI Agent 대화형 질의 섹션
-    st.markdown("#### 💬 AI 에이전트에게 음성/텍스트로 물어보기")
+    st.markdown("#### 💬 AI 에이전트에게 물어보기")
     agent_query = st.text_input(
         "질문 입력:",
         placeholder="예: x-ray 검사가 끝났는데, 다음은 어디로 가야해?",
@@ -783,8 +780,8 @@ if st.session_state.page == "home":
     if btn_ask and agent_query:
         with st.spinner("AI 에이전트(Gemini)가 최적 검사실 및 맞춤 경로를 추론 중입니다..."):
             reply_text, success = run_ai_agent(agent_query, st.session_state.day_type, st.session_state.time_str)
+        st.success(reply_text)
         if success:
-            st.success(reply_text)
             st.session_state.page = "map"
             st.rerun()
 
@@ -1007,17 +1004,55 @@ if st.session_state.page == "home":
             st.session_state.page = "map"
             st.rerun()
 
-    # 5) 시뮬레이션용 시간 및 요일 프리셋
+    # 5) 시뮬레이션용 시간 및 요일 프리셋 (X-ray & 채혈 원클릭 비교 탑재)
     with st.expander("⏰ 현재 요일 및 시간 변경 (운영시간 테스트)", expanded=False):
+        st.caption("👉 버튼을 누르면 각 검사의 주간/야간 검사실 배정 결과를 원클릭으로 비교할 수 있습니다.")
+        
+        # [비교 세트 1] 일반촬영 (X-ray) 비교
+        st.markdown("**📸 일반촬영 (X-ray) 주/야간 원클릭 비교**")
         x_c1, x_c2 = st.columns(2)
-        if x_c1.button("🕒 평일 15:00 (X-ray ➔ 동관 1층)", use_container_width=True, key="btn_xray_day"):
+        if x_c1.button("🕒 평일 15:00 (주간 ➔ 동관 1층)", use_container_width=True, key="btn_xray_day"):
             st.session_state.day_type = "평일(월~금)"
             st.session_state.time_str = "15:00"
+            st.session_state.selected_exam_idx = 0
             st.rerun()
-        if x_c2.button("🌙 평일 18:00 (X-ray ➔ 동관 2층)", use_container_width=True, key="btn_xray_night"):
+        if x_c2.button("🌙 평일 18:00 (야간 ➔ 동관 2층)", use_container_width=True, key="btn_xray_night"):
             st.session_state.day_type = "평일(월~금)"
             st.session_state.time_str = "18:00"
+            st.session_state.selected_exam_idx = 0
             st.rerun()
+
+        # [비교 세트 2] 외래 채혈실 (오후 10시 / 22:00 야간 케이스)
+        st.markdown("**🩸 외래 채혈실 주/야간(오후 10시) 원클릭 비교**")
+        b_c1, b_c2 = st.columns(2)
+        if b_c1.button("☀️ 평일 14:00 (주간 ➔ 서관 1층 채혈실)", use_container_width=True, key="btn_blood_day"):
+            st.session_state.day_type = "평일(월~금)"
+            st.session_state.time_str = "14:00"
+            st.session_state.selected_exam_idx = 1
+            st.rerun()
+        if b_c2.button("🌙 평일 22:00 (오후 10시 ➔ 서관 2층 CT/MR 채혈실)", use_container_width=True, key="btn_blood_night"):
+            st.session_state.day_type = "평일(월~금)"
+            st.session_state.time_str = "22:00"
+            st.session_state.selected_exam_idx = 1
+            st.rerun()
+
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        t_c1, t_c2 = st.columns(2)
+        day_types = ["평일(월~금)", "토요일", "일요일/공휴일"]
+        st.session_state.day_type = t_c1.selectbox(
+            "요일",
+            day_types,
+            index=day_types.index(st.session_state.day_type) if st.session_state.day_type in day_types else 0
+        )
+
+        time_options = ["08:30", "11:20", "14:00", "15:00", "17:30", "18:00", "19:00", "22:00"]
+        if st.session_state.time_str not in time_options:
+            st.session_state.time_str = "14:00"
+        st.session_state.time_str = t_c2.select_slider(
+            "시각",
+            time_options,
+            value=st.session_state.time_str
+        )
 
 # =========================================================
 # PAGE 2: 맞춤형 지도 전용 화면
@@ -1042,6 +1077,24 @@ elif st.session_state.page == "map":
     is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
     elev_info = ELEVATORS[s_meta["building"]]
 
+    # 시간대별 배정 사유 텍스트
+    if st.session_state.nav_mode == "exam":
+        cat = PATIENT_EXAMS[st.session_state.selected_exam_idx]["cat"]
+        if cat == "XRAY":
+            if dest_key == "1F_EAST_XRAY":
+                reason_txt = "평일 주간 운영 시간(08:00~17:30)에 해당하여 <b>동관 1층 영상의학과 외래촬영실</b>로 안내합니다."
+            else:
+                reason_txt = "평일 17:30 이후(야간/당직) 시간대에 해당하여 <b>동관 2층 일반촬영실</b>로 자동 전환하여 안내합니다."
+        elif cat == "BLOOD":
+            if dest_key == "1F_WEST_BLOOD":
+                reason_txt = "주간 운영 시간(06:10~18:30)에 해당하여 <b>서관 1층 채혈실</b>로 안내합니다."
+            else:
+                reason_txt = f"야간 운영 시간(18:30 이후, 현재 {st.session_state.time_str})에 해당하여 <b>서관 2층 CT/MR 채혈실 (진단검사의학과)</b>로 자동 전환하여 안내합니다."
+        else:
+            reason_txt = f"현재 시각({st.session_state.day_type} {st.session_state.time_str}) 정상 운영 검사실로 안내합니다."
+    else:
+        reason_txt = "직접 선택하신 목적지로 이동 안내합니다."
+
     if st.session_state.ai_reasoning_msg:
         st.markdown(f"<div class='agent-banner'>{st.session_state.ai_reasoning_msg}</div>", unsafe_allow_html=True)
 
@@ -1052,6 +1105,7 @@ elif st.session_state.page == "map":
         <div style="font-size:0.9rem; color:#333; margin-top:4px;">
             • <b>내 출발 위치</b>: [{s_meta['building']} {s_meta['floor']}] {s_meta['name']}<br>
             • <b>운영시간</b>: {d_meta['hours']}<br>
+            • <b>배정 사유</b>: {reason_txt}<br>
             • <b>이동 안내</b>: 중앙 복도 메인 동선을 따라 연한 녹색 구역으로 이동해 주세요.
         </div>
     </div>
