@@ -470,27 +470,42 @@ def determine_next_step(completed_exam_tag, day_type, time_str, is_fasting=False
     }
 
 # ---------------------------------------------------------
-# 6. 순수 Gemini LLM Agent 엔진
+# 6. 스마트 다중 의도(Intent) 지원 AI Agent 엔진
 # ---------------------------------------------------------
 def run_ai_agent(user_query, day_type, time_str):
     if not client:
         st.error("⚠️ Streamlit Cloud의 Secrets에 GEMINI_API_KEY가 등록되지 않았습니다.")
         return "API 키 설정을 확인해 주세요.", False
 
+    # 등록된 전체 검사실 및 편의시설 명칭 리스트 추출
+    facility_list = [f"{v['name']} (키: {k})" for k, v in MAP_ROOMS.items()]
+
     system_prompt = f"""
     당신은 서울아산병원 외래 환자 길 안내 전문 AI 에이전트입니다.
     현재 원내 시각은 [{day_type} {time_str}]입니다.
 
-    환자의 입력 문장을 임상적으로 분석하여 다음 정보를 반드시 지정된 JSON 규격으로만 응답하세요:
-    1. completed_exam: 방금 마친 검사 코드 (반드시 "XRAY", "BLOOD", "CT", "MR" 중 하나 선택)
-    2. is_fasting: 환자가 금식 중이거나 배고픔을 호소하는지 여부 (true / false)
-    3. thought: 환자의 상황 파악 및 다음 동선 추천 사유를 한 줄 요약
-    4. reply: 환자에게 건넬 친절하고 명확한 안내 멘트 (1~2문장)
+    병원 내 등록된 주요 시설 목록:
+    {json.dumps(facility_list, ensure_ascii=False)}
 
-    [출력 JSON 스키마]:
+    환자의 입력 문장을 정밀 분석하여 아래 2가지 intent 중 하나로 분류하고 JSON으로만 응답하세요:
+    
+    1. intent: "EXAM_NEXT" (특정 검사를 마쳤거나, 다음 검사 일정을 물어볼 때)
+       - completed_exam: "XRAY" | "BLOOD" | "CT" | "MR"
+       - is_fasting: 금식/공복 여부 (true / false)
+
+    2. intent: "FIND_FACILITY" (외래회송팀, 약국, 수납 등 특정 시설/진료과의 위치를 물어볼 때)
+       - target_key: 위 목록에서 가장 일치하는 시설의 키값 (예: 외래회송팀 문의 시 "2F_EAST_CONSULT")
+
+    공통 항목:
+    - thought: 판단 근거 1줄 요약
+    - reply: 환자에게 건넬 친절한 안내 멘트 (건물, 층수 명시)
+
+    [출력 JSON 규격]:
     {{
-        "completed_exam": "XRAY" | "BLOOD" | "CT" | "MR",
+        "intent": "EXAM_NEXT" | "FIND_FACILITY",
+        "completed_exam": "XRAY" | "BLOOD" | "CT" | "MR" | null,
         "is_fasting": boolean,
+        "target_key": string | null,
         "thought": "string",
         "reply": "string"
     }}
@@ -507,22 +522,64 @@ def run_ai_agent(user_query, day_type, time_str):
         )
 
         parsed = json.loads(response.text)
-        comp_exam = parsed.get("completed_exam", "XRAY")
-        is_fast = parsed.get("is_fasting", False)
+        intent = parsed.get("intent", "EXAM_NEXT")
 
-        tool_res = determine_next_step(comp_exam, day_type, time_str, is_fast)
+        # ---------------------------------------------------------
+        # 분기 1: 특정 시설/장소 위치 문의 (예: 외래회송팀 어디에 있어?)
+        # ---------------------------------------------------------
+        if intent == "FIND_FACILITY" and parsed.get("target_key"):
+            target_key = parsed["target_key"]
+            if target_key not in MAP_ROOMS:
+                target_key = "2F_EAST_CONSULT"
+            target_meta = MAP_ROOMS[target_key]
 
-        st.session_state.start_key = tool_res["start_key"]
-        s_meta = MAP_ROOMS[tool_res["start_key"]]
-        st.session_state.sel_bldg = s_meta["building"]
-        st.session_state.sel_floor = s_meta["floor"]
-        st.session_state.selected_exam_idx = tool_res["selected_exam_idx"]
-        st.session_state.nav_mode = "exam"
-        st.session_state.loc_error = False
+            # 상황 A: 환자가 현재 내 위치를 아직 선택하지 않은 경우
+            if not st.session_state.start_key:
+                st.session_state.loc_error = True
+                # 목적지만 미리 세팅해둠
+                st.session_state.custom_dest_key = target_key
+                st.session_state.sel_dest_bldg = target_meta["building"]
+                st.session_state.sel_dest_floor = target_meta["floor"]
+                
+                reply_msg = (
+                    f"💡 **{target_meta['name']}** 위치 안내:\n\n"
+                    f"해당 시설은 **[{target_meta['building']} {target_meta['floor']}]**에 있습니다.\n\n"
+                    f"🧭 상세 경로 지도를 확인하시려면 **아래에서 현재 계신 [내 위치]를 먼저 선택**해 주세요!"
+                )
+                st.session_state.ai_reasoning_msg = f"🤖 **AI 추론**: 환자가 {target_meta['short_name']} 위치를 문의함 (내 위치 선택 유도)"
+                return reply_msg, False  # 지도로 바로 넘어가지 않고 홈 화면에서 내 위치를 선택하도록 유도
 
-        guide_msg = parsed.get("reply", f"다음 순서인 {tool_res['dest_name']}(으)로 이동하시면 됩니다.")
-        st.session_state.ai_reasoning_msg = f"🤖 **AI Agent Reasoning**: {parsed.get('thought', '선행 검사 완료 인지')} ➔ **{tool_res['dest_name']}** 최적 경로 배정"
-        return guide_msg, True
+            # 상황 B: 내 위치가 이미 선택되어 있는 경우 -> 즉시 지도로 안내
+            else:
+                st.session_state.custom_dest_key = target_key
+                st.session_state.nav_mode = "custom"
+                st.session_state.ai_reasoning_msg = f"🤖 **AI 추론**: 내 위치 기준 ➔ **{target_meta['name']}** 맞춤 길안내"
+                guide_msg = parsed.get("reply", f"{target_meta['name']}(으)로 이동하는 최적 동선을 지도로 열어드립니다.")
+                return guide_msg, True
+
+        # ---------------------------------------------------------
+        # 분기 2: 선행 검사 완료 후 다음 동선 문의
+        # ---------------------------------------------------------
+        else:
+            comp_exam = parsed.get("completed_exam", "XRAY") or "XRAY"
+            is_fast = parsed.get("is_fasting", False)
+
+            tool_res = determine_next_step(comp_exam, day_type, time_str, is_fast)
+
+            # 출발지가 비어있다면 검사 완료 위치를 출발지로 자동 설정
+            if not st.session_state.start_key:
+                st.session_state.start_key = tool_res["start_key"]
+                s_meta = MAP_ROOMS[tool_res["start_key"]]
+                st.session_state.sel_bldg = s_meta["building"]
+                st.session_state.sel_floor = s_meta["floor"]
+
+            st.session_state.selected_exam_idx = tool_res["selected_exam_idx"]
+            st.session_state.nav_mode = "exam"
+            st.session_state.loc_error = False
+
+            guide_msg = parsed.get("reply", f"다음 순서인 {tool_res['dest_name']}(으)로 이동하시면 됩니다.")
+            st.session_state.ai_reasoning_msg = f"🤖 **AI Agent Reasoning**: {parsed.get('thought', '선행 검사 완료 인지')} ➔ **{tool_res['dest_name']}** 최적 경로 배정"
+            return guide_msg, True
 
     except Exception as e:
         st.error(f"⚠️ Gemini API 호출 중 오류가 발생했습니다: {str(e)}")
