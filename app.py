@@ -1,19 +1,30 @@
 import os
+import json
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
+from google import genai
+from google.genai import types
 
 # ---------------------------------------------------------
-# 1. 기본 레이아웃 설정
+# 1. API 키 및 LLM 클라이언트 설정 (실제 Key 직접 바인딩)
+# ---------------------------------------------------------
+# [API 키 적용 위치] 
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+
+# Fallback 없이 순수 LLM 호출을 전담하는 Client 객체 생성
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# ---------------------------------------------------------
+# 2. 기본 레이아웃 및 세션 상태 초기화
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="서울아산병원 검사실 길 안내",
+    page_title="서울아산병원 AI 검사실 길 안내 에이전트",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화
 if "page" not in st.session_state:
     st.session_state.page = "home"
 if "nav_mode" not in st.session_state:
@@ -21,7 +32,7 @@ if "nav_mode" not in st.session_state:
 if "selected_exam_idx" not in st.session_state:
     st.session_state.selected_exam_idx = 0
 
-# 내 출발 위치 세션 (첫 시작 시 공란 세팅)
+# 내 출발 위치 세션
 if "sel_bldg" not in st.session_state:
     st.session_state.sel_bldg = None
 if "sel_floor" not in st.session_state:
@@ -45,15 +56,19 @@ if "day_type" not in st.session_state:
 if "time_str" not in st.session_state:
     st.session_state.time_str = "14:00"
 
+# AI 에이전트 추론 메시지 세션
+if "ai_reasoning_msg" not in st.session_state:
+    st.session_state.ai_reasoning_msg = ""
+
 # ---------------------------------------------------------
-# 2. 반응형 CSS
+# 3. 반응형 CSS
 # ---------------------------------------------------------
 if st.session_state.page == "home":
     container_max_width = "480px"
-    padding_top = "2.6rem"
+    padding_top = "2.2rem"
 else:
     container_max_width = "1200px"
-    padding_top = "2.0rem"
+    padding_top = "1.8rem"
 
 st.markdown(f"""
 <style>
@@ -73,26 +88,31 @@ header[data-testid="stHeader"] {{
 .app-header {{
     background: linear-gradient(135deg, #005C5C 0%, #003A3A 100%);
     color: white;
-    padding: 18px 20px;
+    padding: 16px 20px;
     border-radius: 14px;
-    margin-top: 6px;
-    margin-bottom: 18px;
+    margin-bottom: 16px;
     box-shadow: 0 4px 10px rgba(0,0,0,0.12);
-    box-sizing: border-box;
-    width: 100%;
 }}
 .app-header h3 {{
     margin: 0;
-    font-size: 1.22rem;
+    font-size: 1.2rem;
     font-weight: 800;
     color: #FFFFFF;
-    line-height: 1.4;
 }}
 .app-header p {{
-    margin: 6px 0 0 0;
-    font-size: 0.85rem;
+    margin: 5px 0 0 0;
+    font-size: 0.84rem;
     color: #D2EBEB;
-    line-height: 1.35;
+}}
+.agent-banner {{
+    background: #E8F5E9;
+    border: 1.5px solid #2E7D32;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    font-size: 0.88rem;
+    color: #1B5E20;
+    line-height: 1.45;
 }}
 .exam-row-wrap {{
     display: flex;
@@ -104,8 +124,8 @@ header[data-testid="stHeader"] {{
     background-color: #F0F5FF;
     color: #1D4ED8;
     font-weight: 700;
-    font-size: 0.86rem;
-    padding: 5px 14px;
+    font-size: 0.84rem;
+    padding: 4px 12px;
     border-radius: 20px;
     white-space: nowrap;
     margin-top: 2px;
@@ -114,16 +134,15 @@ header[data-testid="stHeader"] {{
     flex: 1;
 }}
 .exam-title-txt {{
-    font-size: 1.05rem;
+    font-size: 1.02rem;
     font-weight: 800;
     color: #111111;
     margin-bottom: 4px;
-    line-height: 1.35;
 }}
 .exam-sub-txt {{
-    font-size: 0.86rem;
+    font-size: 0.84rem;
     color: #555555;
-    line-height: 1.45;
+    line-height: 1.4;
 }}
 div.stButton > button {{
     background-color: #2E6930 !important;
@@ -131,14 +150,12 @@ div.stButton > button {{
     border: none !important;
     border-radius: 6px !important;
     font-weight: 700 !important;
-    font-size: 0.98rem !important;
-    padding: 0.52rem 1.2rem !important;
+    font-size: 0.95rem !important;
+    padding: 0.5rem 1.0rem !important;
     width: 100% !important;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.08) !important;
 }}
 div.stButton > button:hover {{
     background-color: #235225 !important;
-    color: #FFFFFF !important;
 }}
 .dest-banner {{
     background-color: #EBF7EE;
@@ -159,7 +176,6 @@ div.stButton > button:hover {{
     margin-bottom: 8px;
     display: inline-block;
 }}
-/* 위치 미선택 알림 배너 스타일 */
 .loc-alert-card {{
     background: #FFF8E1;
     border: 2px solid #FFA000;
@@ -167,24 +183,19 @@ div.stButton > button:hover {{
     padding: 14px 16px;
     margin-bottom: 14px;
     box-shadow: 0 4px 12px rgba(255, 160, 0, 0.2);
-    animation: fadeIn 0.3s ease-in-out;
-}}
-@keyframes fadeIn {{
-    from {{ opacity: 0; transform: translateY(-6px); }}
-    to {{ opacity: 1; transform: translateY(0); }}
 }}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 3. 도면 기반 실제 검사실·시설 좌표 사전
+# 4. 도면 기반 실제 검사실·시설 마스터 좌표 사전
 # ---------------------------------------------------------
 MAP_ROOMS = {
-    # ================= [서관 1층] =================
+    # [서관 1층]
     "1F_WEST_BLOOD": {
         "name": "서관 1층 채혈실", "short_name": "서관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "서관",
-        "hours": "평일 06:10~18:30, 토 06:30~13:30 (주간 운영)",
+        "hours": "평일 06:10~18:30, 토 06:30~13:30 (주간)",
         "boxes": [(0.238, 0.520, 0.320, 0.654)]
     },
     "1F_WEST_CTMR": {
@@ -206,7 +217,7 @@ MAP_ROOMS = {
         "boxes": [(0.105, 0.670, 0.145, 0.800)]
     },
     "1F_WEST_ADMIN": {
-        "name": "서관 1층 원무상담실·서관통합창구", "short_name": "서관통합창구 (입·원무)",
+        "name": "서관 1층 원무상담실·서관통합창구", "short_name": "서관통합창구",
         "floor": "1층", "floor_code": "1F", "building": "서관",
         "hours": "평일 08:00~17:30",
         "boxes": [(0.245, 0.670, 0.320, 0.790)]
@@ -218,11 +229,11 @@ MAP_ROOMS = {
         "boxes": [(0.018, 0.215, 0.105, 0.505)]
     },
 
-    # ================= [동관 1층] =================
+    # [동관 1층]
     "1F_EAST_XRAY": {
         "name": "동관 1층 영상의학과 외래촬영실", "short_name": "영상의학과 외래촬영실",
         "floor": "1층", "floor_code": "1F", "building": "동관",
-        "hours": "평일 08:00~17:30 (주간 운영)",
+        "hours": "평일 08:00~17:30 (주간)",
         "boxes": [(0.508, 0.313, 0.550, 0.540)]
     },
     "1F_EAST_NEURO": {
@@ -244,7 +255,7 @@ MAP_ROOMS = {
         "boxes": [(0.585, 0.520, 0.665, 0.660)]
     },
     "1F_EAST_DIAB": {
-        "name": "동관 1층 당뇨병센터·내분비내과", "short_name": "당뇨병센터·내분비내과",
+        "name": "동관 1층 당뇨병센터·내분비내과", "short_name": "당뇨병센터",
         "floor": "1층", "floor_code": "1F", "building": "동관",
         "hours": "평일 08:30~17:30",
         "boxes": [(0.360, 0.340, 0.465, 0.550)]
@@ -256,11 +267,11 @@ MAP_ROOMS = {
         "boxes": [(0.562, 0.725, 0.665, 0.920)]
     },
 
-    # ================= [신관 1층] =================
+    # [신관 1층]
     "1F_NEW_BLOOD": {
         "name": "신관 1층 채혈실", "short_name": "신관 채혈실",
         "floor": "1층", "floor_code": "1F", "building": "신관",
-        "hours": "평일 06:10~17:30 (주말·공휴일 미운영)",
+        "hours": "평일 06:10~17:30 (휴일 미운영)",
         "boxes": [(0.742, 0.550, 0.795, 0.635)]
     },
     "1F_NEW_PED_XRAY": {
@@ -281,22 +292,10 @@ MAP_ROOMS = {
         "hours": "평일 08:30~17:30",
         "boxes": [(0.680, 0.065, 0.865, 0.258)]
     },
-    "1F_NEW_PED_ECG": {
-        "name": "신관 1층 소아심장·소아심전도검사실", "short_name": "소아심장·심전도실",
-        "floor": "1층", "floor_code": "1F", "building": "신관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.898, 0.275, 0.970, 0.350)]
-    },
-    "1F_NEW_PED_INJ": {
-        "name": "신관 1층 소아주사실", "short_name": "소아주사실",
-        "floor": "1층", "floor_code": "1F", "building": "신관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.898, 0.350, 0.970, 0.415)]
-    },
 
-    # ================= [서관 2층] =================
+    # [서관 2층]
     "2F_WEST_CT": {
-        "name": "서관 2층 CT실 / 투시조영실", "short_name": "CT실 / 투시조영실",
+        "name": "서관 2층 CT실 / 투시조영실", "short_name": "서관 CT실",
         "floor": "2층", "floor_code": "2F", "building": "서관",
         "hours": "평일 08:00~18:00",
         "boxes": [(0.223, 0.106, 0.307, 0.292), (0.223, 0.319, 0.259, 0.585), (0.267, 0.398, 0.307, 0.585)]
@@ -304,7 +303,7 @@ MAP_ROOMS = {
     "2F_WEST_DIAG": {
         "name": "서관 2층 진단검사의학과 (CT/MR 채혈실)", "short_name": "진단검사의학과(CT/MR채혈실)",
         "floor": "2층", "floor_code": "2F", "building": "서관",
-        "hours": "야간/당직 운영 (18:30~익일 06:10)",
+        "hours": "야간/당직 (18:30~익일 06:10)",
         "boxes": [(0.005, 0.228, 0.096, 0.692)]
     },
     "2F_WEST_PREADM": {
@@ -326,17 +325,17 @@ MAP_ROOMS = {
         "boxes": [(0.116, 0.320, 0.215, 0.585)]
     },
     "2F_WEST_BRONCHO": {
-        "name": "서관 2층 기관지내시경·호흡기검사실", "short_name": "기관지내시경·호흡기",
+        "name": "서관 2층 기관지내시경·호흡기검사실", "short_name": "기관지내시경실",
         "floor": "2층", "floor_code": "2F", "building": "서관",
         "hours": "평일 08:30~17:30",
         "boxes": [(0.220, 0.875, 0.310, 0.990)]
     },
 
-    # ================= [동관 2층] =================
+    # [동관 2층]
     "2F_EAST_XRAY": {
         "name": "동관 2층 영상의학과 일반촬영실", "short_name": "동관 일반촬영실",
         "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 08:00~18:00 (야간/당직 운영)",
+        "hours": "평일 08:00~18:00 (야간/당직)",
         "boxes": [(0.340, 0.275, 0.420, 0.355), (0.340, 0.355, 0.410, 0.556), (0.390, 0.556, 0.410, 0.638)]
     },
     "2F_EAST_MR": {
@@ -346,37 +345,19 @@ MAP_ROOMS = {
         "boxes": [(0.340, 0.007, 0.435, 0.255)]
     },
     "2F_EAST_ANGIO": {
-        "name": "동관 2층 혈관조영실 (1~9)", "short_name": "혈관조영실",
+        "name": "동관 2층 혈관조영실", "short_name": "혈관조영실",
         "floor": "2층", "floor_code": "2F", "building": "동관",
         "hours": "평일 08:00~18:00",
         "boxes": [(0.440, 0.007, 0.575, 0.255)]
     },
-    "2F_EAST_NUC": {
-        "name": "동관 2층 동관 핵의학과 (혈액/영상검사실)", "short_name": "핵의학과 검사실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 08:00~17:30",
-        "boxes": [(0.485, 0.275, 0.655, 0.640)]
-    },
-    "2F_EAST_BRAIN": {
-        "name": "동관 2층 뇌신경검사실 (근전도,뇌파,수면,유발전위)", "short_name": "뇌신경검사실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.340, 0.730, 0.448, 0.970)]
-    },
     "2F_EAST_HEART": {
-        "name": "동관 2층 심장검사실 (심전도,심초음파,홀터)", "short_name": "심장검사실",
+        "name": "동관 2층 심장검사실", "short_name": "심장검사실",
         "floor": "2층", "floor_code": "2F", "building": "동관",
         "hours": "평일 08:30~17:30",
         "boxes": [(0.595, 0.730, 0.655, 0.970)]
     },
-    "2F_EAST_CONSULT": {
-        "name": "동관 2층 외래회송 상담실", "short_name": "외래회송 상담실",
-        "floor": "2층", "floor_code": "2F", "building": "동관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.455, 0.730, 0.548, 0.865)]
-    },
 
-    # ================= [신관 2층] =================
+    # [신관 2층]
     "2F_NEW_MR": {
         "name": "신관 2층 MR실", "short_name": "신관 MR실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
@@ -384,40 +365,22 @@ MAP_ROOMS = {
         "boxes": [(0.685, 0.255, 0.815, 0.450)]
     },
     "2F_NEW_XRAY_US": {
-        "name": "신관 2층 일반촬영실·투시조영실·초음파실", "short_name": "일반촬영·초음파실",
+        "name": "신관 2층 일반촬영실·초음파실", "short_name": "일반촬영·초음파실",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:00~17:30",
         "boxes": [(0.695, 0.450, 0.815, 0.685)]
+    },
+    "2F_NEW_EYE": {
+        "name": "신관 2층 안과 / 안과검사실", "short_name": "안과·안과검사실",
+        "floor": "2층", "floor_code": "2F", "building": "신관",
+        "hours": "평일 08:30~17:30",
+        "boxes": [(0.895, 0.250, 0.975, 0.685)]
     },
     "2F_NEW_DENTAL": {
         "name": "신관 2층 치과 / 소아치과", "short_name": "치과·소아치과",
         "floor": "2층", "floor_code": "2F", "building": "신관",
         "hours": "평일 08:30~17:30",
         "boxes": [(0.685, 0.035, 0.878, 0.225)]
-    },
-    "2F_NEW_EYE": {
-        "name": "신관 2층 안과 / 안과검사실 / 소아안과", "short_name": "안과·안과검사실",
-        "floor": "2층", "floor_code": "2F", "building": "신관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.895, 0.250, 0.975, 0.685)]
-    },
-    "2F_NEW_BMD": {
-        "name": "신관 2층 신관 핵의학과 골밀도검사실", "short_name": "골밀도검사실",
-        "floor": "2층", "floor_code": "2F", "building": "신관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.685, 0.725, 0.728, 0.970)]
-    },
-    "2F_NEW_PLASTIC": {
-        "name": "신관 2층 성형외과", "short_name": "성형외과",
-        "floor": "2층", "floor_code": "2F", "building": "신관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.730, 0.780, 0.810, 0.970)]
-    },
-    "2F_NEW_DERMA": {
-        "name": "신관 2층 피부과", "short_name": "피부과",
-        "floor": "2층", "floor_code": "2F", "building": "신관",
-        "hours": "평일 08:30~17:30",
-        "boxes": [(0.908, 0.780, 0.965, 0.970)]
     }
 }
 
@@ -455,12 +418,11 @@ PATIENT_EXAMS = [
 ]
 
 # ---------------------------------------------------------
-# 4. 시간·상황 매칭 규칙 엔진 (출발지 미지정 시에도 안전 방어)
+# 5. Action Tool: 의료·시간 라우팅 규칙 엔진
 # ---------------------------------------------------------
 def resolve_dest_key(exam, start_key, day_type, time_str):
     cat = exam["cat"]
     t_val = int(time_str.replace(":", ""))
-    start_bldg = MAP_ROOMS[start_key]["building"] if (start_key and start_key in MAP_ROOMS) else "동관"
 
     if cat == "XRAY":
         if day_type == "평일(월~금)" and 800 <= t_val <= 1730:
@@ -476,8 +438,104 @@ def resolve_dest_key(exam, start_key, day_type, time_str):
 
     return exam["default_key"]
 
+def determine_next_step(completed_exam_tag, day_type, time_str, is_fasting=False):
+    """
+    LLM 추론 결과에 의해 직접 호출되는 파이썬 Action Tool
+    완료된 검사명과 금식 여부를 기반으로 출발지 및 최적 목적지를 확정합니다.
+    """
+    if completed_exam_tag == "XRAY":
+        start_key = "1F_EAST_XRAY" if (day_type == "평일(월~금)" and 800 <= int(time_str.replace(":", "")) <= 1730) else "2F_EAST_XRAY"
+        # X-ray 완료 후: 금식 상태라면 검체 정확도와 공복 유지를 풀기 위해 채혈(인덱스 1) 최우선 배정
+        next_idx = 1
+    elif completed_exam_tag == "BLOOD":
+        start_key = "1F_WEST_BLOOD"
+        next_idx = 2  # 채혈 완료 후 복부 조영 CT
+    elif completed_exam_tag == "CT":
+        start_key = "2F_WEST_CT"
+        next_idx = 3  # CT 완료 후 뇌 MRI
+    elif completed_exam_tag == "MR":
+        start_key = "2F_NEW_MR"
+        next_idx = 0
+    else:
+        start_key = "1F_EAST_XRAY"
+        next_idx = 1
+
+    target_exam = PATIENT_EXAMS[next_idx]
+    dest_key = resolve_dest_key(target_exam, start_key, day_type, time_str)
+
+    return {
+        "start_key": start_key,
+        "selected_exam_idx": next_idx,
+        "dest_key": dest_key,
+        "dest_name": MAP_ROOMS[dest_key]["name"]
+    }
+
 # ---------------------------------------------------------
-# 5. 도면 가공 함수
+# 6. 순수 Gemini LLM Agent 엔진 (Fallback 로직 완전 제거)
+# ---------------------------------------------------------
+def run_ai_agent(user_query, day_type, time_str):
+    """
+    제공된 실제 API 키를 기반으로 순수 Gemini LLM을 구동합니다.
+    환자의 비정형 자연어에서 선행 검사 완료와 임상 상태를 정밀 추출합니다.
+    """
+    system_prompt = f"""
+    당신은 서울아산병원 외래 환자 길 안내 전문 AI 에이전트입니다.
+    현재 원내 시각은 [{day_type} {time_str}]입니다.
+
+    환자의 입력 문장을 임상적으로 분석하여 다음 정보를 반드시 지정된 JSON 규격으로만 응답하세요:
+    1. completed_exam: 방금 마친 검사 코드 (반드시 "XRAY", "BLOOD", "CT", "MR" 중 하나 선택)
+    2. is_fasting: 환자가 금식 중이거나 배고픔을 호소하는지 여부 (true / false)
+    3. thought: 환자의 상황 파악 및 다음 동선 추천 사유를 한 줄 요약
+    4. reply: 환자에게 건넬 친절하고 명확한 안내 멘트 (1~2문장)
+
+    [출력 JSON 스키마]:
+    {{
+        "completed_exam": "XRAY" | "BLOOD" | "CT" | "MR",
+        "is_fasting": boolean,
+        "thought": "string",
+        "reply": "string"
+    }}
+    """
+
+    try:
+        # 순수 LLM 호출 (JSON 구조화 출력 강제)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_query,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                temperature=0.0
+            )
+        )
+
+        parsed = json.loads(response.text)
+        comp_exam = parsed.get("completed_exam", "XRAY")
+        is_fast = parsed.get("is_fasting", False)
+
+        # 2단계: LLM 판단 결과를 입력으로 Action Tool 실행
+        tool_res = determine_next_step(comp_exam, day_type, time_str, is_fast)
+
+        # 3단계: 화면 및 지도 동기화를 위한 Streamlit 세션 갱신
+        st.session_state.start_key = tool_res["start_key"]
+        s_meta = MAP_ROOMS[tool_res["start_key"]]
+        st.session_state.sel_bldg = s_meta["building"]
+        st.session_state.sel_floor = s_meta["floor"]
+        st.session_state.selected_exam_idx = tool_res["selected_exam_idx"]
+        st.session_state.nav_mode = "exam"
+        st.session_state.loc_error = False
+
+        guide_msg = parsed.get("reply", f"다음 순서인 {tool_res['dest_name']}(으)로 이동하시면 됩니다.")
+        st.session_state.ai_reasoning_msg = f"🤖 **AI Agent Reasoning**: {parsed.get('thought', '선행 검사 완료 인지')} ➔ **{tool_res['dest_name']}** 최적 경로 배정"
+        
+        return guide_msg, True
+
+    except Exception as e:
+        st.error(f"⚠️ Gemini API 호출 중 오류가 발생했습니다: {str(e)}")
+        return "API 응답을 처리하지 못했습니다. 네트워크 상태 및 API 키 유효성을 확인해 주세요.", False
+
+# ---------------------------------------------------------
+# 7. 도면 탐색 및 그래픽 정밀 렌더러
 # ---------------------------------------------------------
 def find_image(floor_code):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -599,19 +657,45 @@ def draw_colored_map(base_arr, red_key=None, green_key=None, elev_box=None, mode
     return pil_img
 
 # =========================================================
-# PAGE 1: 검사 일정 & 내 위치 & 검사 외 장소 선택 화면
+# PAGE 1: 홈 화면 (검사 일정 & AI 에이전트 질문 & 위치 선택)
 # =========================================================
 if st.session_state.page == "home":
     st.markdown("""
     <div class="app-header">
-        <h3>🏥 서울아산병원 검사실 길 안내</h3>
-        <p>받으실 검사의 [길안내] 버튼을 누르면 넓은 지도로 이동합니다.</p>
+        <h3>🏥 서울아산병원 AI 검사실 길 안내 에이전트</h3>
+        <p>자연어로 질문하시면 AI Agent가 상황을 분석해 최적 동선 도면을 안내합니다.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # 1) 나의 검사 일정 목록
+    # 1) AI Agent 대화형 질의 섹션
+    st.markdown("#### 💬 AI 에이전트에게 음성/텍스트로 물어보기")
+    agent_query = st.text_input(
+        "질문 입력:",
+        placeholder="예: x-ray 검사가 끝났는데, 다음은 어디로 가야해?",
+        label_visibility="collapsed"
+    )
+    
+    col_ask1, col_ask2 = st.columns([2.0, 1.0])
+    with col_ask1:
+        btn_ask = st.button("🤖 AI에게 다음 길 물어보기", use_container_width=True)
+    with col_ask2:
+        btn_preset = st.button("💡 'X-ray 완료' 질의 입력", use_container_width=True)
+        if btn_preset:
+            agent_query = "x-ray 검사가 끝났는데, 다음은 어디로 가야해"
+
+    if (btn_ask or btn_preset) and agent_query:
+        with st.spinner("AI 에이전트(Gemini)가 최적 검사실 및 맞춤 경로를 추론 중입니다..."):
+            reply_text, success = run_ai_agent(agent_query, st.session_state.day_type, st.session_state.time_str)
+        if success:
+            st.success(reply_text)
+            st.session_state.page = "map"
+            st.rerun()
+
+    st.markdown("---")
+
+    # 2) 나의 검사 일정 목록
     st.markdown("#### 📅 나의 검사 일정")
-    st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 눌러주세요.")
+    st.caption("안내를 원하시는 검사 우측의 **[길안내]**를 직접 누르셔도 됩니다.")
 
     for idx, ex in enumerate(PATIENT_EXAMS):
         assigned_key = resolve_dest_key(ex, st.session_state.start_key, st.session_state.day_type, st.session_state.time_str)
@@ -635,7 +719,6 @@ if st.session_state.page == "home":
             </div>
             """, unsafe_allow_html=True)
 
-            # 길안내 클릭 시: 내 위치 미선택 상태면 경고 띄우고 위치 선택란으로 유도!
             if st.button("🧭 길안내", key=f"btn_go_map_{idx}", use_container_width=True):
                 if not st.session_state.start_key:
                     st.session_state.loc_error = True
@@ -644,35 +727,28 @@ if st.session_state.page == "home":
                     st.session_state.loc_error = False
                     st.session_state.selected_exam_idx = idx
                     st.session_state.nav_mode = "exam"
+                    st.session_state.ai_reasoning_msg = f"수동 선택: **{ex['title']}** 경로 안내"
                     st.session_state.page = "map"
                     st.rerun()
 
     st.markdown("---")
 
-    # 2) 현재 내 위치 선택란 (미선택 시 경고 배너 및 자동 스크롤)
+    # 3) 현재 내 위치 수동 선택란 (공란 시작 및 방어 로직)
     st.markdown('<div id="loc_section_anchor"></div>', unsafe_allow_html=True)
 
-    # 위치를 선택하지 않고 길안내를 눌렀을 때 표시되는 강조 배너
     if st.session_state.loc_error and not st.session_state.start_key:
         st.markdown("""
         <div class="loc-alert-card">
-            <div style="font-weight:800; font-size:1.02rem; color:#B71C1C; display:flex; align-items:center; gap:6px;">
+            <div style="font-weight:800; font-size:1.02rem; color:#B71C1C;">
                 📍 현재 계신 내 위치를 먼저 선택해 주세요!
             </div>
-            <div style="font-size:0.87rem; color:#4E342E; margin-top:5px; line-height:1.45;">
-                정확한 길안내를 위해 아래에서 <b>[관 선택] ➔ [층 선택] ➔ [위치 선택]</b>을 완료하신 후 길안내를 눌러주세요.
+            <div style="font-size:0.86rem; color:#4E342E; margin-top:4px;">
+                정확한 길안내를 위해 아래에서 <b>[관] ➔ [층] ➔ [위치]</b>를 지정하시거나 상단 AI에게 질문해 주세요.
             </div>
         </div>
-        <script>
-            var target = window.parent.document.getElementById('loc_section_anchor') || document.getElementById('loc_section_anchor');
-            if (target) {
-                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-        </script>
         """, unsafe_allow_html=True)
-        st.toast("📍 현재 내 위치를 먼저 선택해 주세요!", icon="⚠️")
 
-    st.markdown("#### 📍 현재 내 위치 선택")
+    st.markdown("#### 📍 현재 내 위치 수동 선택")
 
     bldg_options = ["서관", "동관", "신관"]
     floor_options = ["1층", "2층"]
@@ -681,13 +757,7 @@ if st.session_state.page == "home":
 
     with loc_col1:
         sel_bldg_idx = bldg_options.index(st.session_state.sel_bldg) if st.session_state.sel_bldg in bldg_options else None
-        new_bldg = st.selectbox(
-            "관 선택",
-            options=bldg_options,
-            index=sel_bldg_idx,
-            placeholder="관 선택",
-            key="sb_start_bldg"
-        )
+        new_bldg = st.selectbox("관 선택", options=bldg_options, index=sel_bldg_idx, placeholder="관 선택", key="sb_start_bldg")
         if new_bldg != st.session_state.sel_bldg:
             st.session_state.sel_bldg = new_bldg
             st.session_state.start_key = None
@@ -695,19 +765,12 @@ if st.session_state.page == "home":
 
     with loc_col2:
         sel_floor_idx = floor_options.index(st.session_state.sel_floor) if st.session_state.sel_floor in floor_options else None
-        new_floor = st.selectbox(
-            "층 선택",
-            options=floor_options,
-            index=sel_floor_idx,
-            placeholder="층 선택",
-            key="sb_start_floor"
-        )
+        new_floor = st.selectbox("층 선택", options=floor_options, index=sel_floor_idx, placeholder="층 선택", key="sb_start_floor")
         if new_floor != st.session_state.sel_floor:
             st.session_state.sel_floor = new_floor
             st.session_state.start_key = None
             st.rerun()
 
-    # 관과 층이 모두 선택되었을 때만 세부 검사실 목록 필터링
     if st.session_state.sel_bldg and st.session_state.sel_floor:
         filtered_start_keys = [
             k for k, v in MAP_ROOMS.items()
@@ -734,7 +797,7 @@ if st.session_state.page == "home":
 
     st.markdown("---")
 
-    # 3) 검사 외 찾아갈 장소 선택
+    # 4) 검사 외 찾아갈 장소 선택
     st.markdown("#### 🧭 검사 외 찾아갈 장소 선택")
     st.caption("※ 검사 일정 외 편의시설이나 다른 검사실을 찾으실 때만 선택해 주세요.")
 
@@ -784,68 +847,33 @@ if st.session_state.page == "home":
         else:
             st.session_state.loc_error = False
             st.session_state.nav_mode = "custom"
+            st.session_state.ai_reasoning_msg = f"수동 선택: 목적지 **{MAP_ROOMS[st.session_state.custom_dest_key]['name']}** 이동"
             st.session_state.page = "map"
             st.rerun()
 
-    # 4) 현재 요일 및 시간 설정 (원클릭 비교 버튼)
-    with st.expander("⚙️ 현재 요일 및 시간 설정 (테스트용)", expanded=False):
-        st.caption("👉 버튼을 누르면 각 검사의 주간/야간 검사실 배정 결과를 원클릭으로 비교할 수 있습니다.")
-        
-        st.markdown("**📸 일반촬영 (X-ray) 주/야간 원클릭 비교**")
+    # 5) 시뮬레이션용 시간 및 요일 프리셋
+    with st.expander("⏰ 현재 요일 및 시간 변경 (운영시간 테스트)", expanded=False):
         x_c1, x_c2 = st.columns(2)
-        if x_c1.button("🕒 평일 15:00 (주간 ➔ 동관 1층)", use_container_width=True, key="btn_xray_day"):
+        if x_c1.button("🕒 평일 15:00 (X-ray ➔ 동관 1층)", use_container_width=True, key="btn_xray_day"):
             st.session_state.day_type = "평일(월~금)"
             st.session_state.time_str = "15:00"
-            st.session_state.selected_exam_idx = 0
             st.rerun()
-        if x_c2.button("🌙 평일 18:00 (야간 ➔ 동관 2층)", use_container_width=True, key="btn_xray_night"):
+        if x_c2.button("🌙 평일 18:00 (X-ray ➔ 동관 2층)", use_container_width=True, key="btn_xray_night"):
             st.session_state.day_type = "평일(월~금)"
             st.session_state.time_str = "18:00"
-            st.session_state.selected_exam_idx = 0
             st.rerun()
-
-        st.markdown("**🩸 외래 채혈실 주/야간 원클릭 비교**")
-        b_c1, b_c2 = st.columns(2)
-        if b_c1.button("☀️ 평일 14:00 (주간 ➔ 서관 1층 채혈실)", use_container_width=True, key="btn_blood_day"):
-            st.session_state.day_type = "평일(월~금)"
-            st.session_state.time_str = "14:00"
-            st.session_state.selected_exam_idx = 1
-            st.rerun()
-        if b_c2.button("🌙 평일 19:00 (야간 ➔ 서관 2층 CT/MR 채혈실)", use_container_width=True, key="btn_blood_night"):
-            st.session_state.day_type = "평일(월~금)"
-            st.session_state.time_str = "19:00"
-            st.session_state.selected_exam_idx = 1
-            st.rerun()
-
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        t_c1, t_c2 = st.columns(2)
-        day_types = ["평일(월~금)", "토요일", "일요일/공휴일"]
-        st.session_state.day_type = t_c1.selectbox(
-            "요일",
-            day_types,
-            index=day_types.index(st.session_state.day_type) if st.session_state.day_type in day_types else 0
-        )
-
-        time_options = ["08:30", "11:20", "14:00", "15:00", "17:30", "18:00", "19:00", "20:00"]
-        if st.session_state.time_str not in time_options:
-            st.session_state.time_str = "14:00"
-        st.session_state.time_str = t_c2.select_slider(
-            "시각",
-            time_options,
-            value=st.session_state.time_str
-        )
 
 # =========================================================
-# PAGE 2: 지도 전용 화면
+# PAGE 2: 맞춤형 지도 전용 화면
 # =========================================================
 elif st.session_state.page == "map":
     b_col1, b_col2 = st.columns([1.2, 2.8])
     with b_col1:
-        if st.button("⬅️ 검사 목록 및 위치 변경으로 돌아가기", use_container_width=True):
+        if st.button("⬅️ 검사 목록 및 질문으로 돌아가기", use_container_width=True):
             st.session_state.page = "home"
             st.rerun()
 
-    start_key = st.session_state.start_key if st.session_state.start_key else "2F_EAST_XRAY"
+    start_key = st.session_state.start_key if st.session_state.start_key else "1F_EAST_XRAY"
 
     if st.session_state.nav_mode == "custom":
         dest_key = st.session_state.custom_dest_key
@@ -858,23 +886,9 @@ elif st.session_state.page == "map":
     is_diff_floor = (s_meta["floor_code"] != d_meta["floor_code"])
     elev_info = ELEVATORS[s_meta["building"]]
 
-    # 시간대별 사유 텍스트
-    if st.session_state.nav_mode == "exam":
-        cat = PATIENT_EXAMS[st.session_state.selected_exam_idx]["cat"]
-        if cat == "XRAY":
-            if dest_key == "1F_EAST_XRAY":
-                reason_txt = f"평일 주간 운영 시간(08:00~17:30)에 해당하여 <b>동관 1층 영상의학과 외래촬영실</b>로 안내합니다."
-            else:
-                reason_txt = f"평일 17:30 이후 시간대에 해당하여 <b>동관 2층 일반촬영실</b>로 자동 전환하여 안내합니다."
-        elif cat == "BLOOD":
-            if dest_key == "1F_WEST_BLOOD":
-                reason_txt = f"주간 운영 시간(06:10~18:30)에 해당하여 <b>서관 1층 채혈실</b>로 안내합니다."
-            else:
-                reason_txt = f"야간 운영 시간(18:30 이후)에 해당하여 <b>서관 2층 CT/MR 채혈실 (진단검사의학과)</b>로 자동 전환하여 안내합니다."
-        else:
-            reason_txt = f"현재 시각({st.session_state.day_type} {st.session_state.time_str}) 정상 운영 검사실로 안내합니다."
-    else:
-        reason_txt = f"직접 선택하신 목적지로 이동 안내합니다."
+    # AI 에이전트 추론 배너 표출
+    if st.session_state.ai_reasoning_msg:
+        st.markdown(f"<div class='agent-banner'>{st.session_state.ai_reasoning_msg}</div>", unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="dest-banner">
@@ -883,7 +897,7 @@ elif st.session_state.page == "map":
         <div style="font-size:0.9rem; color:#333; margin-top:4px;">
             • <b>내 출발 위치</b>: [{s_meta['building']} {s_meta['floor']}] {s_meta['name']}<br>
             • <b>운영시간</b>: {d_meta['hours']}<br>
-            • <b>배정 사유</b>: {reason_txt}
+            • <b>이동 안내</b>: 중앙 복도 메인 동선을 따라 연한 녹색 구역으로 이동해 주세요.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -925,9 +939,3 @@ elif st.session_state.page == "map":
                 base_same, red_key=start_key, green_key=dest_key, mode="SAME", floor_code=s_meta["floor_code"]
             )
             st.image(img_same, use_container_width=True)
-
-    st.markdown("---")
-    with st.expander("💬 길 안내 AI에게 질문하기"):
-        q = st.text_input("질문을 입력하세요:", placeholder="예: 지금 채혈실 어디로 가나요?")
-        if q:
-            st.success(f"현재 시각({st.session_state.day_type} {st.session_state.time_str}) 기준, {d_meta['name']}(으)로 이동하시면 됩니다. 지도에 표시된 복도 동선을 따라가 주세요!")
